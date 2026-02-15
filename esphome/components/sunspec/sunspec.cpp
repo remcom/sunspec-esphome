@@ -8,32 +8,25 @@ namespace sunspec {
 
 static const char *const TAG = "sunspec";
 
-SunSpecServer::SunSpecServer() : internal_tcp_() {}
-
-void SunSpecServer::set_owns_modbus_tcp(bool owns) { this->owns_tcp_ = owns; }
-
-modbus_tcp::ModbusTCP *SunSpecServer::get_internal_modbus_tcp() { return &this->internal_tcp_; }
+SunSpecServer::SunSpecServer() = default;
 
 void SunSpecServer::setup() {
   ESP_LOGCONFIG(TAG, "Setting up SunSpec server...");
 
-  // Use internal ModbusTCP if we own it, otherwise use external
-  if (this->owns_tcp_) {
-    this->tcp_ = &this->internal_tcp_;
-  }
+  // Setup the embedded ModbusTCP server
+  this->tcp_.setup();
 
-  // Register with ModbusTCP server
-  if (this->tcp_) {
-    this->address_ = this->unit_address_;
-    this->tcp_->register_device(this);
-    ESP_LOGD(TAG, "Registered with Modbus TCP server at unit address 0x%02X", this->address_);
-  } else {
-    ESP_LOGE(TAG, "ModbusTCP server not configured");
-    this->mark_failed();
-    return;
-  }
+  // Register this device with the ModbusTCP server
+  this->address_ = this->unit_address_;
+  this->tcp_.register_device(this);
+  ESP_LOGD(TAG, "Registered with Modbus TCP server at unit address 0x%02X", this->address_);
 
   ESP_LOGD(TAG, "SunSpec server initialized at base address %d (0x%04X)", this->base_address_, this->base_address_);
+}
+
+void SunSpecServer::loop() {
+  // Run the ModbusTCP server loop
+  this->tcp_.loop();
 }
 
 void SunSpecServer::dump_config() {
@@ -126,12 +119,10 @@ void SunSpecServer::send_read_response_(uint8_t function_code, uint16_t start_ad
   }
 
   // Send response via TCP connection using active connection context
-  if (this->tcp_) {
-    size_t conn_id = this->tcp_->get_active_conn_id();
-    uint16_t transaction_id = this->tcp_->get_active_transaction_id();
-    uint8_t unit_id = this->tcp_->get_active_unit_id();
-    this->tcp_->send_response(conn_id, transaction_id, unit_id, response);
-  }
+  size_t conn_id = this->tcp_.get_active_conn_id();
+  uint16_t transaction_id = this->tcp_.get_active_transaction_id();
+  uint8_t unit_id = this->tcp_.get_active_unit_id();
+  this->tcp_.send_response(conn_id, transaction_id, unit_id, response);
 }
 
 uint16_t SunSpecServer::read_register_(uint16_t address) {

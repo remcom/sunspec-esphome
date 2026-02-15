@@ -1,7 +1,6 @@
 """Constants for SunSpec component."""
 
 # Configuration keys
-CONF_MODBUS_TCP_ID = "modbus_tcp_id"
 CONF_MAX_CONNECTIONS = "max_connections"
 CONF_BASE_ADDRESS = "base_address"
 CONF_MANUFACTURER = "manufacturer"

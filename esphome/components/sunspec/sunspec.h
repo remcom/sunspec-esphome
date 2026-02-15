@@ -4,8 +4,8 @@
 #include "esphome/core/controller.h"
 #include "esphome/core/helpers.h"
 #include "esphome/components/sensor/sensor.h"
-#include "esphome/components/modbus/modbus.h"
-#include "esphome/components/modbus_tcp/modbus_tcp.h"
+#include "modbus.h"
+#include "modbus_tcp.h"
 
 #include <string>
 #include <vector>
@@ -27,14 +27,13 @@ class SunSpecServer : public Component, public Controller, public modbus::Modbus
   ~SunSpecServer() = default;
 
   void setup() override;
-  void loop() override {}
+  void loop() override;
   void dump_config() override;
   float get_setup_priority() const override;
 
   // Configuration setters (called from Python code generation)
-  void set_modbus_tcp(modbus_tcp::ModbusTCP *tcp) { this->tcp_ = tcp; }
-  void set_owns_modbus_tcp(bool owns);
-  modbus_tcp::ModbusTCP *get_internal_modbus_tcp();
+  void set_port(uint16_t port) { this->tcp_.set_port(port); }
+  void set_max_connections(uint8_t max_connections) { this->tcp_.set_max_connections(max_connections); }
   void set_base_address(uint16_t addr) { this->base_address_ = addr; }
   void set_manufacturer(const std::string &manufacturer) { this->manufacturer_ = manufacturer; }
   void set_model(const std::string &model) { this->model_ = model; }
@@ -60,9 +59,7 @@ class SunSpecServer : public Component, public Controller, public modbus::Modbus
                                  uint16_t number_of_registers) override;
 
  protected:
-  modbus_tcp::ModbusTCP *tcp_{nullptr};
-  modbus_tcp::ModbusTCP internal_tcp_;  // Internal ModbusTCP instance (only used if owns_tcp_ is true)
-  bool owns_tcp_{false};
+  modbus_tcp::ModbusTCP tcp_;  // Embedded ModbusTCP server
   uint16_t base_address_{40000};
   uint8_t unit_address_{1};
 
