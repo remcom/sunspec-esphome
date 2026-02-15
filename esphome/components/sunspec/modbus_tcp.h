@@ -25,7 +25,7 @@ struct ClientConnection {
 class ModbusTCP : public Component {
  public:
   ModbusTCP();
-  ~ModbusTCP() override;
+  ~ModbusTCP();
 
   void setup() override;
   void loop() override;
