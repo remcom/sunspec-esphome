@@ -132,14 +132,15 @@ def test_fc06_write_readonly_register_rejected(client):
 
 
 def test_fc16_write_both_limit_registers(client):
-    """FC16: write WMaxLimPct=75 and WMaxLim_Ena=1 individually, verify both persist."""
-    client.write_register(40155, 75, slave=1)
-    wr = client.write_register(40159, 1, slave=1)
-    assert not wr.isError()
+    """FC16: write WMaxLimPct=75 and WMaxLim_Ena=1 via FC16, verify both persist."""
+    wr1 = client.write_multiple_registers(40155, [75], slave=1)
+    assert not wr1.isError()
+    wr2 = client.write_multiple_registers(40159, [1], slave=1)
+    assert not wr2.isError()
     rr = client.read_holding_registers(40155, 1, slave=1)
     assert rr.registers[0] == 75
     rr = client.read_holding_registers(40159, 1, slave=1)
     assert rr.registers[0] == 1
     # cleanup
-    client.write_register(40159, 0, slave=1)
-    client.write_register(40155, 100, slave=1)
+    client.write_multiple_registers(40159, [0], slave=1)
+    client.write_multiple_registers(40155, [100], slave=1)
