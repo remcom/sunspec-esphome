@@ -63,7 +63,7 @@ class SunspecComponent : public Component {
   std::string version_;
   uint16_t    rated_power_{0};
 
-  // Sensors (required except energy_total)
+  // Sensors (ac_power, ac_voltage, ac_frequency, temperature required; ac_current and energy_total optional)
   sensor::Sensor *ac_power_{nullptr};
   sensor::Sensor *ac_voltage_{nullptr};
   sensor::Sensor *ac_current_{nullptr};
