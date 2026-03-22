@@ -168,12 +168,15 @@ def test_power_limit_enable(client):
     client.write_register(40155, 60, slave=1)
     client.write_register(40159, 1, slave=1)
     rr = client.read_holding_registers(40155, 1, slave=1)
+    assert not rr.isError()
     assert rr.registers[0] == 60
     rr = client.read_holding_registers(40159, 1, slave=1)
+    assert not rr.isError()
     assert rr.registers[0] == 1
     # cleanup
     client.write_register(40159, 0, slave=1)
     client.write_register(40155, 100, slave=1)
+
 
 def test_power_limit_disable_restores_full_power(client):
     """Setting WMaxLim_Ena=0 after a limit should log a restore command."""
@@ -181,4 +184,10 @@ def test_power_limit_disable_restores_full_power(client):
     client.write_register(40159, 1, slave=1)
     client.write_register(40159, 0, slave=1)
     rr = client.read_holding_registers(40159, 1, slave=1)
+    assert not rr.isError()
     assert rr.registers[0] == 0
+    # cleanup
+    client.write_register(40155, 100, slave=1)
+    rr = client.read_holding_registers(40155, 1, slave=1)
+    assert not rr.isError()
+    assert rr.registers[0] == 100
