@@ -119,14 +119,87 @@ void SunspecComponent::setup() {
   // 2. Initialise register bank
   init_static_registers_();
 
-  // 3. TCP socket -- implemented in Task 4
-  server_fd_ = -1;
+  // 3. Open non-blocking TCP socket on port 502
+  server_fd_ = socket(AF_INET, SOCK_STREAM, 0);
+  if (server_fd_ < 0) {
+    ESP_LOGE(TAG, "socket() failed: %d", errno);
+    mark_failed();
+    return;
+  }
+
+  int opt = 1;
+  setsockopt(server_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+  struct sockaddr_in addr{};
+  addr.sin_family      = AF_INET;
+  addr.sin_addr.s_addr = INADDR_ANY;
+  addr.sin_port        = htons(502);
+
+  if (bind(server_fd_, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+    ESP_LOGE(TAG, "bind() failed on port 502: %d", errno);
+    close(server_fd_);
+    server_fd_ = -1;
+    mark_failed();
+    return;
+  }
+
+  if (listen(server_fd_, 2) < 0) {
+    ESP_LOGE(TAG, "listen() failed: %d", errno);
+    close(server_fd_);
+    server_fd_ = -1;
+    mark_failed();
+    return;
+  }
+
+  // Set non-blocking
+  int flags = fcntl(server_fd_, F_GETFL, 0);
+  fcntl(server_fd_, F_SETFL, flags | O_NONBLOCK);
+
+  ESP_LOGI(TAG, "SunSpec Modbus TCP server listening on port 502");
 }
 
 void SunspecComponent::loop() {
   if (server_fd_ < 0) return;
 
-  // Implemented in later tasks
+  accept_clients_();
+  refresh_sensors_();
+
+  for (auto &c : clients_) {
+    if (c.fd >= 0) process_client_(c);
+  }
+}
+
+void SunspecComponent::accept_clients_() {
+  struct sockaddr_in client_addr{};
+  socklen_t addr_len = sizeof(client_addr);
+  int fd = accept(server_fd_, (struct sockaddr *)&client_addr, &addr_len);
+  if (fd < 0) return;  // EAGAIN / EWOULDBLOCK -- no pending connection
+
+  // Find a free slot
+  for (auto &c : clients_) {
+    if (c.fd < 0) {
+      int flags = fcntl(fd, F_GETFL, 0);
+      fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+      c.fd           = fd;
+      c.buf_len      = 0;
+      c.last_recv_ms = millis();
+      ESP_LOGD(TAG, "Client connected (fd=%d)", fd);
+      return;
+    }
+  }
+
+  // No free slot -- reject
+  ESP_LOGW(TAG, "Max clients reached, rejecting connection");
+  close(fd);
+}
+
+void SunspecComponent::close_client_(Client &c) {
+  if (c.fd >= 0) {
+    ESP_LOGD(TAG, "Closing client (fd=%d)", c.fd);
+    close(c.fd);
+    c.fd      = -1;
+    c.buf_len = 0;
+  }
 }
 
 // ---------- stubs ----------
