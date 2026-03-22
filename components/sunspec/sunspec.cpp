@@ -206,14 +206,22 @@ void SunspecComponent::close_client_(Client &c) {
 
 void SunspecComponent::refresh_sensors_() {
   // AC current (SF=-2): value x 100, same on total and phase A
-  // ac_current_ is optional; write 0x8000 (SunSpec "not implemented") when absent
+  // If no current sensor, derive from power / voltage (assuming unity power factor)
   if (ac_current_) {
     int16_t curr = to_sf(ac_current_->get_state(), -2);
     set_reg(40072, (uint16_t) curr);  // AC total current
     set_reg(40073, (uint16_t) curr);  // Phase A current
   } else {
-    set_reg(40072, 0x8000);
-    set_reg(40073, 0x8000);
+    float pwr = ac_power_->get_state();
+    float volt = ac_voltage_->get_state();
+    if (!std::isnan(pwr) && !std::isnan(volt) && volt > 1.0f) {
+      int16_t curr = to_sf(pwr / volt, -2);
+      set_reg(40072, (uint16_t) curr);
+      set_reg(40073, (uint16_t) curr);
+    } else {
+      set_reg(40072, 0x8000);
+      set_reg(40073, 0x8000);
+    }
   }
 
   // AC voltage (SF=-1): value x 10
