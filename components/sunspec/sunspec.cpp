@@ -320,9 +320,48 @@ void SunspecComponent::handle_frame_(Client &c, uint16_t frame_len) {
     }
     send_response_(c.fd, txid, uid, pdu, sizeof(pdu));
 
-  } else if (fc == 0x06 || fc == 0x10) {
-    // FC06/FC16: Write -- implemented in Task 7
-    send_exception_(c.fd, txid, uid, fc, 0x01);  // placeholder
+  } else if (fc == 0x06) {
+    // FC06: Write Single Register
+    if (frame_len < 12) { send_exception_(c.fd, txid, uid, fc, 0x03); return; }
+    uint16_t addr = (c.buf[8]  << 8) | c.buf[9];
+    uint16_t val  = (c.buf[10] << 8) | c.buf[11];
+
+    if (addr != REG_WMAXLIMPCT && addr != REG_WMAXLIM_ENA) {
+      send_exception_(c.fd, txid, uid, fc, 0x02);
+      return;
+    }
+    set_reg(addr, val);
+    apply_power_limit_();
+
+    // Echo back per Modbus spec
+    uint8_t pdu[5] = { fc, c.buf[8], c.buf[9], c.buf[10], c.buf[11] };
+    send_response_(c.fd, txid, uid, pdu, sizeof(pdu));
+
+  } else if (fc == 0x10) {
+    // FC16: Write Multiple Registers
+    if (frame_len < 13) { send_exception_(c.fd, txid, uid, fc, 0x03); return; }
+    uint16_t start = (c.buf[8]  << 8) | c.buf[9];
+    uint16_t count = (c.buf[10] << 8) | c.buf[11];
+
+    if (count > 120 || frame_len < (uint16_t)(13 + count * 2)) {
+      send_exception_(c.fd, txid, uid, fc, 0x03);
+      return;
+    }
+
+    // Apply only writable registers; silently ignore others
+    bool changed = false;
+    for (uint16_t i = 0; i < count; i++) {
+      uint16_t addr = start + i;
+      uint16_t val  = (c.buf[13 + i * 2] << 8) | c.buf[14 + i * 2];
+      if (addr == REG_WMAXLIMPCT || addr == REG_WMAXLIM_ENA) {
+        set_reg(addr, val);
+        changed = true;
+      }
+    }
+    if (changed) apply_power_limit_();
+
+    uint8_t pdu[5] = { fc, c.buf[8], c.buf[9], c.buf[10], c.buf[11] };
+    send_response_(c.fd, txid, uid, pdu, sizeof(pdu));
 
   } else {
     send_exception_(c.fd, txid, uid, fc, 0x01);  // Illegal Function
@@ -346,6 +385,8 @@ void SunspecComponent::send_exception_(int fd, uint16_t txid, uint8_t uid,
   uint8_t pdu[2] = { (uint8_t)(fc | 0x80), code };
   send_response_(fd, txid, uid, pdu, 2);
 }
+
+void SunspecComponent::apply_power_limit_() { /* Task 8 */ }
 
 }  // namespace sunspec
 }  // namespace esphome

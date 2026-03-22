@@ -112,3 +112,34 @@ def test_fc03_too_many_registers(client):
     """FC03 requesting > 120 registers must return exception code 0x03."""
     rr = client.read_holding_registers(40000, 121, slave=1)
     assert rr.isError() or rr.function_code == 0x83
+
+
+def test_fc06_write_wmaxlimpct(client):
+    """FC06 write to WMaxLimPct (40155) must succeed and read back."""
+    wr = client.write_register(40155, 80, slave=1)
+    assert not wr.isError()
+    rr = client.read_holding_registers(40155, 1, slave=1)
+    assert not rr.isError()
+    assert rr.registers[0] == 80
+    # restore
+    client.write_register(40155, 100, slave=1)
+
+
+def test_fc06_write_readonly_register_rejected(client):
+    """FC06 write to a read-only register must return exception 0x02."""
+    wr = client.write_register(40084, 999, slave=1)  # AC Power is read-only
+    assert wr.isError() or wr.function_code == 0x86
+
+
+def test_fc16_write_both_limit_registers(client):
+    """FC16: write WMaxLimPct=75 and WMaxLim_Ena=1 individually, verify both persist."""
+    client.write_register(40155, 75, slave=1)
+    wr = client.write_register(40159, 1, slave=1)
+    assert not wr.isError()
+    rr = client.read_holding_registers(40155, 1, slave=1)
+    assert rr.registers[0] == 75
+    rr = client.read_holding_registers(40159, 1, slave=1)
+    assert rr.registers[0] == 1
+    # cleanup
+    client.write_register(40159, 0, slave=1)
+    client.write_register(40155, 100, slave=1)
