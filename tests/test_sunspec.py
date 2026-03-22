@@ -144,3 +144,17 @@ def test_fc16_write_both_limit_registers(client):
     # cleanup
     client.write_multiple_registers(40159, [0], slave=1)
     client.write_multiple_registers(40155, [100], slave=1)
+
+
+def test_fc16_multi_register_write(client):
+    """FC16: write 5 registers in one call spanning 40155-40159; verify writable registers persist."""
+    wr = client.write_multiple_registers(40155, [60, 0xFFFF, 0x0000, 0xFFFF, 1], slave=1)
+    assert not wr.isError()
+    rr = client.read_holding_registers(40155, 1, slave=1)
+    assert not rr.isError()
+    assert rr.registers[0] == 60
+    rr = client.read_holding_registers(40159, 1, slave=1)
+    assert not rr.isError()
+    assert rr.registers[0] == 1
+    # restore defaults
+    client.write_multiple_registers(40155, [100, 0xFFFF, 0x0000, 0xFFFF, 0], slave=1)

@@ -360,6 +360,7 @@ void SunspecComponent::handle_frame_(Client &c, uint16_t frame_len) {
     }
     if (changed) apply_power_limit_();
 
+    // Always respond with success — non-writable addresses are silently ignored per spec.
     uint8_t pdu[5] = { fc, c.buf[8], c.buf[9], c.buf[10], c.buf[11] };
     send_response_(c.fd, txid, uid, pdu, sizeof(pdu));
 
