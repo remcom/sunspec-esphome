@@ -204,7 +204,41 @@ void SunspecComponent::close_client_(Client &c) {
 
 // ---------- stubs ----------
 
-void SunspecComponent::refresh_sensors_() { /* Task 5 */ }
+void SunspecComponent::refresh_sensors_() {
+  // AC current (SF=-2): value x 100, same on total and phase A
+  int16_t curr = to_sf(ac_current_->get_state(), -2);
+  set_reg(40072, (uint16_t) curr);  // AC total current
+  set_reg(40073, (uint16_t) curr);  // Phase A current
+
+  // AC voltage (SF=-1): value x 10
+  set_reg(40080, (uint16_t) to_sf(ac_voltage_->get_state(), -1));
+
+  // AC power (SF=0): direct watts
+  set_reg(40084, (uint16_t) to_sf(ac_power_->get_state(), 0));
+
+  // AC frequency (SF=-2): value x 100
+  set_reg(40086, (uint16_t) to_sf(ac_frequency_->get_state(), -2));
+
+  // Energy (uint32, SF=0)
+  if (energy_total_) {
+    float e = energy_total_->get_state();
+    if (!std::isnan(e) && e >= 0) {
+      uint32_t wh = (uint32_t) e;
+      set_reg(40094, (uint16_t)(wh >> 16));
+      set_reg(40095, (uint16_t)(wh & 0xFFFF));
+    } else {
+      set_reg(40094, 0);
+      set_reg(40095, 0);
+    }
+  }
+
+  // Temperature (SF=-1): value x 10
+  set_reg(40103, (uint16_t) to_sf(temperature_->get_state(), -1));
+
+  // Inverter state: MPPT (4) if producing, else Off (1)
+  float pwr = ac_power_->get_state();
+  set_reg(40108, (!std::isnan(pwr) && pwr > 5.0f) ? 4 : 1);
+}
 void SunspecComponent::process_client_(Client &c) { /* Task 6 */ }
 
 }  // namespace sunspec
