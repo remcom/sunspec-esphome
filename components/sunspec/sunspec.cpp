@@ -120,7 +120,7 @@ void SunspecComponent::setup() {
   init_static_registers_();
 
   // 3. Open non-blocking TCP socket on port 502
-  server_fd_ = socket(AF_INET, SOCK_STREAM, 0);
+  server_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
   if (server_fd_ < 0) {
     ESP_LOGE(TAG, "socket() failed: %d", errno);
     mark_failed();
@@ -128,32 +128,32 @@ void SunspecComponent::setup() {
   }
 
   int opt = 1;
-  setsockopt(server_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+  ::setsockopt(server_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
   struct sockaddr_in addr{};
   addr.sin_family      = AF_INET;
   addr.sin_addr.s_addr = INADDR_ANY;
   addr.sin_port        = htons(502);
 
-  if (bind(server_fd_, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+  if (::bind(server_fd_, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
     ESP_LOGE(TAG, "bind() failed on port 502: %d", errno);
-    close(server_fd_);
+    ::close(server_fd_);
     server_fd_ = -1;
     mark_failed();
     return;
   }
 
-  if (listen(server_fd_, 2) < 0) {
+  if (::listen(server_fd_, 2) < 0) {
     ESP_LOGE(TAG, "listen() failed: %d", errno);
-    close(server_fd_);
+    ::close(server_fd_);
     server_fd_ = -1;
     mark_failed();
     return;
   }
 
   // Set non-blocking
-  int flags = fcntl(server_fd_, F_GETFL, 0);
-  fcntl(server_fd_, F_SETFL, flags | O_NONBLOCK);
+  int flags = ::fcntl(server_fd_, F_GETFL, 0);
+  ::fcntl(server_fd_, F_SETFL, flags | O_NONBLOCK);
 
   ESP_LOGI(TAG, "SunSpec Modbus TCP server listening on port 502");
 }
@@ -172,14 +172,14 @@ void SunspecComponent::loop() {
 void SunspecComponent::accept_clients_() {
   struct sockaddr_in client_addr{};
   socklen_t addr_len = sizeof(client_addr);
-  int fd = accept(server_fd_, (struct sockaddr *)&client_addr, &addr_len);
+  int fd = ::accept(server_fd_, (struct sockaddr *)&client_addr, &addr_len);
   if (fd < 0) return;  // EAGAIN / EWOULDBLOCK -- no pending connection
 
   // Find a free slot
   for (auto &c : clients_) {
     if (c.fd < 0) {
-      int flags = fcntl(fd, F_GETFL, 0);
-      fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+      int flags = ::fcntl(fd, F_GETFL, 0);
+      ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
       c.fd           = fd;
       c.buf_len      = 0;
       c.last_recv_ms = millis();
@@ -190,13 +190,13 @@ void SunspecComponent::accept_clients_() {
 
   // No free slot -- reject
   ESP_LOGW(TAG, "Max clients reached, rejecting connection");
-  close(fd);
+  ::close(fd);
 }
 
 void SunspecComponent::close_client_(Client &c) {
   if (c.fd >= 0) {
     ESP_LOGD(TAG, "Closing client (fd=%d)", c.fd);
-    close(c.fd);
+    ::close(c.fd);
     c.fd      = -1;
     c.buf_len = 0;
   }
@@ -254,7 +254,7 @@ void SunspecComponent::process_client_(Client &c) {
   }
 
   // Read available bytes
-  int n = recv(c.fd, c.buf + c.buf_len, MAX_BUF - c.buf_len, 0);
+  int n = ::recv(c.fd, c.buf + c.buf_len, MAX_BUF - c.buf_len, 0);
   if (n == 0) { close_client_(c); return; }
   if (n < 0) {
     if (errno != EAGAIN && errno != EWOULDBLOCK) close_client_(c);
@@ -384,7 +384,7 @@ void SunspecComponent::send_response_(int fd, uint16_t txid, uint8_t uid,
   frame[5] = (1 + pdu_len) & 0xFF;
   frame[6] = uid;
   memcpy(frame + 7, pdu, pdu_len);
-  send(fd, frame, sizeof(frame), 0);
+  ::send(fd, frame, sizeof(frame), 0);
 }
 
 void SunspecComponent::send_exception_(int fd, uint16_t txid, uint8_t uid,
@@ -406,10 +406,7 @@ void SunspecComponent::apply_power_limit_() {
   auto cmd = modbus_controller::ModbusCommandItem::create_write_single_command(
       controller_, power_limit_register_, write_val);
 
-  if (!controller_->queue_command(cmd)) {
-    ESP_LOGW(TAG, "ModbusController queue full, power limit write skipped (pct=%u)", write_val);
-    return;
-  }
+  controller_->queue_command(cmd);
 
   if (ena == 1) {
     ESP_LOGI(TAG, "Power limit set to %u%%", pct);
