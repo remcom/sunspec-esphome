@@ -110,7 +110,7 @@ void SunspecComponent::init_static_registers_() {
 
 void SunspecComponent::setup() {
   // 1. Validate required sensor pointers
-  if (!ac_power_ || !ac_voltage_ || !ac_current_ || !ac_frequency_ || !temperature_) {
+  if (!ac_power_ || !ac_voltage_ || !ac_frequency_ || !temperature_) {
     ESP_LOGE(TAG, "One or more required sensors are not configured");
     mark_failed();
     return;
@@ -206,9 +206,15 @@ void SunspecComponent::close_client_(Client &c) {
 
 void SunspecComponent::refresh_sensors_() {
   // AC current (SF=-2): value x 100, same on total and phase A
-  int16_t curr = to_sf(ac_current_->get_state(), -2);
-  set_reg(40072, (uint16_t) curr);  // AC total current
-  set_reg(40073, (uint16_t) curr);  // Phase A current
+  // ac_current_ is optional; write 0x8000 (SunSpec "not implemented") when absent
+  if (ac_current_) {
+    int16_t curr = to_sf(ac_current_->get_state(), -2);
+    set_reg(40072, (uint16_t) curr);  // AC total current
+    set_reg(40073, (uint16_t) curr);  // Phase A current
+  } else {
+    set_reg(40072, 0x8000);
+    set_reg(40073, 0x8000);
+  }
 
   // AC voltage (SF=-1): value x 10
   set_reg(40080, (uint16_t) to_sf(ac_voltage_->get_state(), -1));

@@ -30,7 +30,7 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Required(CONF_RATED_POWER): cv.All(cv.positive_int, cv.Range(max=32767)),
         cv.Required(CONF_AC_POWER): cv.use_id(sensor.Sensor),
         cv.Required(CONF_AC_VOLTAGE): cv.use_id(sensor.Sensor),
-        cv.Required(CONF_AC_CURRENT): cv.use_id(sensor.Sensor),
+        cv.Optional(CONF_AC_CURRENT): cv.use_id(sensor.Sensor),
         cv.Required(CONF_AC_FREQUENCY): cv.use_id(sensor.Sensor),
         cv.Required(CONF_TEMPERATURE): cv.use_id(sensor.Sensor),
         cv.Optional(CONF_ENERGY_TOTAL): cv.use_id(sensor.Sensor),
@@ -55,12 +55,15 @@ async def to_code(config):
     for conf_key, setter in [
         (CONF_AC_POWER, "set_ac_power"),
         (CONF_AC_VOLTAGE, "set_ac_voltage"),
-        (CONF_AC_CURRENT, "set_ac_current"),
         (CONF_AC_FREQUENCY, "set_ac_frequency"),
         (CONF_TEMPERATURE, "set_temperature"),
     ]:
         sens = await cg.get_variable(config[conf_key])
         cg.add(getattr(var, setter)(sens))
+
+    if CONF_AC_CURRENT in config:
+        sens = await cg.get_variable(config[CONF_AC_CURRENT])
+        cg.add(var.set_ac_current(sens))
 
     if CONF_ENERGY_TOTAL in config:
         sens = await cg.get_variable(config[CONF_ENERGY_TOTAL])
