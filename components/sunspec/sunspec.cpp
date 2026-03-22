@@ -237,7 +237,7 @@ void SunspecComponent::refresh_sensors_() {
   if (energy_total_) {
     float e = energy_total_->get_state();
     if (!std::isnan(e) && e >= 0) {
-      uint32_t wh = (uint32_t) e;
+      uint32_t wh = (uint32_t)(e * 1000.0f);
       set_reg(40094, (uint16_t)(wh >> 16));
       set_reg(40095, (uint16_t)(wh & 0xFFFF));
     } else {
