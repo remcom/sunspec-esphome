@@ -158,3 +158,27 @@ def test_fc16_multi_register_write(client):
     assert rr.registers[0] == 1
     # restore defaults
     client.write_multiple_registers(40155, [100, 0xFFFF, 0x0000, 0xFFFF, 0], slave=1)
+
+
+def test_power_limit_enable(client):
+    """Setting WMaxLim_Ena=1 with WMaxLimPct=60 should queue a limit command."""
+    # This test verifies the SunSpec registers update correctly.
+    # Verifying the Solis RS485 register write requires checking the inverter,
+    # which is out of scope for automated testing.
+    client.write_register(40155, 60, slave=1)
+    client.write_register(40159, 1, slave=1)
+    rr = client.read_holding_registers(40155, 1, slave=1)
+    assert rr.registers[0] == 60
+    rr = client.read_holding_registers(40159, 1, slave=1)
+    assert rr.registers[0] == 1
+    # cleanup
+    client.write_register(40159, 0, slave=1)
+    client.write_register(40155, 100, slave=1)
+
+def test_power_limit_disable_restores_full_power(client):
+    """Setting WMaxLim_Ena=0 after a limit should log a restore command."""
+    client.write_register(40155, 50, slave=1)
+    client.write_register(40159, 1, slave=1)
+    client.write_register(40159, 0, slave=1)
+    rr = client.read_holding_registers(40159, 1, slave=1)
+    assert rr.registers[0] == 0

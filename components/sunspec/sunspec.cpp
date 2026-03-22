@@ -387,7 +387,30 @@ void SunspecComponent::send_exception_(int fd, uint16_t txid, uint8_t uid,
   send_response_(fd, txid, uid, pdu, 2);
 }
 
-void SunspecComponent::apply_power_limit_() { /* Task 8 */ }
+void SunspecComponent::apply_power_limit_() {
+  uint16_t ena = get_reg(REG_WMAXLIM_ENA);
+  uint16_t pct = get_reg(REG_WMAXLIMPCT);
+  uint16_t write_val = (ena == 1) ? pct : 100;
+
+  if (!controller_) {
+    ESP_LOGW(TAG, "No ModbusController configured, cannot write power limit");
+    return;
+  }
+
+  auto cmd = modbus_controller::ModbusCommandItem::create_write_single_command(
+      controller_, power_limit_register_, write_val);
+
+  if (!controller_->queue_command(cmd)) {
+    ESP_LOGW(TAG, "ModbusController queue full, power limit write skipped (pct=%u)", write_val);
+    return;
+  }
+
+  if (ena == 1) {
+    ESP_LOGI(TAG, "Power limit set to %u%%", pct);
+  } else {
+    ESP_LOGI(TAG, "Power limit disabled, restoring 100%%");
+  }
+}
 
 }  // namespace sunspec
 }  // namespace esphome
