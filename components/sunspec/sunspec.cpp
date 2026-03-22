@@ -239,7 +239,113 @@ void SunspecComponent::refresh_sensors_() {
   float pwr = ac_power_->get_state();
   set_reg(40108, (!std::isnan(pwr) && pwr > 5.0f) ? 4 : 1);
 }
-void SunspecComponent::process_client_(Client &c) { /* Task 6 */ }
+void SunspecComponent::process_client_(Client &c) {
+  // Timeout check
+  if (millis() - c.last_recv_ms > CLIENT_TIMEOUT_MS) {
+    ESP_LOGD(TAG, "Client timeout (fd=%d)", c.fd);
+    close_client_(c);
+    return;
+  }
+
+  // Read available bytes
+  int n = recv(c.fd, c.buf + c.buf_len, MAX_BUF - c.buf_len, 0);
+  if (n == 0) { close_client_(c); return; }
+  if (n < 0) {
+    if (errno != EAGAIN && errno != EWOULDBLOCK) close_client_(c);
+    return;
+  }
+  c.buf_len     += n;
+  c.last_recv_ms = millis();
+
+  // Overflow guard
+  if (c.buf_len >= MAX_BUF) {
+    ESP_LOGD(TAG, "Client buffer overflow (fd=%d), closing", c.fd);
+    close_client_(c);
+    return;
+  }
+
+  // Process all complete frames in buffer
+  while (c.buf_len >= 6) {
+    uint16_t proto_id   = (c.buf[2] << 8) | c.buf[3];
+    uint16_t pdu_length = (c.buf[4] << 8) | c.buf[5];  // bytes after 6-byte MBAP header
+
+    // Validate protocol ID
+    if (proto_id != 0x0000) {
+      ESP_LOGD(TAG, "Invalid protocol ID %04X, closing", proto_id);
+      close_client_(c);
+      return;
+    }
+
+    uint16_t frame_len = 6 + pdu_length;  // total frame bytes
+    if (frame_len > MAX_BUF) {
+      ESP_LOGD(TAG, "Frame too large (%u bytes), closing", frame_len);
+      close_client_(c);
+      return;
+    }
+
+    if (c.buf_len < frame_len) break;  // incomplete frame, wait for more data
+
+    handle_frame_(c, frame_len);
+
+    // Consume processed frame from buffer
+    c.buf_len -= frame_len;
+    if (c.buf_len > 0) memmove(c.buf, c.buf + frame_len, c.buf_len);
+  }
+}
+
+void SunspecComponent::handle_frame_(Client &c, uint16_t frame_len) {
+  uint16_t txid = (c.buf[0] << 8) | c.buf[1];
+  uint8_t  uid  = c.buf[6];
+  uint8_t  fc   = c.buf[7];
+
+  if (fc == 0x03) {
+    // FC03: Read Holding Registers
+    if (frame_len < 12) { send_exception_(c.fd, txid, uid, fc, 0x03); return; }
+    uint16_t start = (c.buf[8]  << 8) | c.buf[9];
+    uint16_t count = (c.buf[10] << 8) | c.buf[11];
+
+    if (count > 120) { send_exception_(c.fd, txid, uid, fc, 0x03); return; }
+    if (start < BASE_ADDR || (start + count) > (BASE_ADDR + REG_COUNT)) {
+      send_exception_(c.fd, txid, uid, fc, 0x02);
+      return;
+    }
+
+    uint8_t pdu[2 + count * 2];
+    pdu[0] = fc;
+    pdu[1] = count * 2;
+    uint16_t idx = start - BASE_ADDR;
+    for (uint16_t i = 0; i < count; i++) {
+      pdu[2 + i * 2]     = registers_[idx + i] >> 8;
+      pdu[2 + i * 2 + 1] = registers_[idx + i] & 0xFF;
+    }
+    send_response_(c.fd, txid, uid, pdu, sizeof(pdu));
+
+  } else if (fc == 0x06 || fc == 0x10) {
+    // FC06/FC16: Write -- implemented in Task 7
+    send_exception_(c.fd, txid, uid, fc, 0x01);  // placeholder
+
+  } else {
+    send_exception_(c.fd, txid, uid, fc, 0x01);  // Illegal Function
+  }
+}
+
+void SunspecComponent::send_response_(int fd, uint16_t txid, uint8_t uid,
+                                       const uint8_t *pdu, uint8_t pdu_len) {
+  uint8_t frame[7 + pdu_len];
+  frame[0] = txid >> 8;   frame[1] = txid & 0xFF;
+  frame[2] = 0x00;        frame[3] = 0x00;  // Protocol ID
+  frame[4] = (1 + pdu_len) >> 8;
+  frame[5] = (1 + pdu_len) & 0xFF;
+  frame[6] = uid;
+  memcpy(frame + 7, pdu, pdu_len);
+  send(fd, frame, sizeof(frame), 0);
+}
+
+void SunspecComponent::send_exception_(int fd, uint16_t txid, uint8_t uid,
+                                        uint8_t fc, uint8_t code) {
+  uint8_t pdu[2] = { (uint8_t)(fc | 0x80), code };
+  send_response_(fd, txid, uid, pdu, 2);
+}
 
 }  // namespace sunspec
 }  // namespace esphome

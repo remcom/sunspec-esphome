@@ -92,3 +92,23 @@ def test_scale_factors(client):
         assert not rr.isError()
         assert rr.registers[0] == val, \
             f"Register {addr}: expected {hex(val)}, got {hex(rr.registers[0])}"
+
+
+def test_fc03_reads_manufacturer(client):
+    """FC03 should return manufacturer string from registers 40004-40019."""
+    rr = client.read_holding_registers(40004, 16, slave=1)
+    assert not rr.isError()
+    raw = bytes(b for r in rr.registers for b in (r >> 8, r & 0xFF))
+    assert raw.startswith(b"Solis"), f"Got: {raw}"
+
+
+def test_fc03_out_of_range(client):
+    """FC03 on address > 40199 must return exception code 0x02."""
+    rr = client.read_holding_registers(40200, 1, slave=1)
+    assert rr.isError() or rr.function_code == 0x83
+
+
+def test_fc03_too_many_registers(client):
+    """FC03 requesting > 120 registers must return exception code 0x03."""
+    rr = client.read_holding_registers(40000, 121, slave=1)
+    assert rr.isError() or rr.function_code == 0x83
