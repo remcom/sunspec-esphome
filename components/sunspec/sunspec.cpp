@@ -404,18 +404,30 @@ void SunspecComponent::send_exception_(int fd, uint16_t txid, uint8_t uid,
 void SunspecComponent::apply_power_limit_() {
   uint16_t ena = get_reg(REG_WMAXLIM_ENA);
   uint16_t pct = get_reg(REG_WMAXLIMPCT);
-  uint16_t write_val = (ena == 1) ? pct : 100;
 
+  if (power_limit_number_) {
+    // Route through the number entity: 0–100 = limit %, 110 = unlimited
+    float set_val = (ena == 1) ? (float) pct : 110.0f;
+    auto call = power_limit_number_->make_call();
+    call.set_value(set_val);
+    call.perform();
+    if (ena == 1) {
+      ESP_LOGI(TAG, "Power limit set to %u%% via number entity", pct);
+    } else {
+      ESP_LOGI(TAG, "Power limit disabled (110 = unlimited) via number entity");
+    }
+    return;
+  }
+
+  // Fallback: write directly to Modbus register
+  uint16_t write_val = (ena == 1) ? pct : 100;
   if (!controller_) {
     ESP_LOGW(TAG, "No ModbusController configured, cannot write power limit");
     return;
   }
-
   auto cmd = modbus_controller::ModbusCommandItem::create_write_single_command(
       controller_, power_limit_register_, write_val);
-
   controller_->queue_command(cmd);
-
   if (ena == 1) {
     ESP_LOGI(TAG, "Power limit set to %u%%", pct);
   } else {

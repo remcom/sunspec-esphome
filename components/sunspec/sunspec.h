@@ -9,6 +9,7 @@
 #include "esphome/core/log.h"
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/modbus_controller/modbus_controller.h"
+#include "esphome/components/number/number.h"
 
 namespace esphome {
 namespace sunspec {
@@ -54,6 +55,7 @@ class SunspecComponent : public Component {
 
   void set_modbus_controller(modbus_controller::ModbusController *ctrl) { controller_ = ctrl; }
   void set_power_limit_register(uint16_t reg) { power_limit_register_ = reg; }
+  void set_power_limit_number(number::Number *n) { power_limit_number_ = n; }
 
  protected:
   // Config
@@ -74,6 +76,7 @@ class SunspecComponent : public Component {
   // Modbus write-back
   modbus_controller::ModbusController *controller_{nullptr};
   uint16_t power_limit_register_{0};
+  number::Number *power_limit_number_{nullptr};
 
   // Register bank
   uint16_t registers_[REG_COUNT]{};

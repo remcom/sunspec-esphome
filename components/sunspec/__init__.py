@@ -1,6 +1,6 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.components import sensor, modbus_controller
+from esphome.components import sensor, modbus_controller, number
 from esphome.const import CONF_ID
 
 sunspec_ns = cg.esphome_ns.namespace("sunspec")
@@ -19,6 +19,7 @@ CONF_TEMPERATURE = "temperature"
 CONF_ENERGY_TOTAL = "energy_total"
 CONF_MODBUS_CONTROLLER_ID = "modbus_controller_id"
 CONF_POWER_LIMIT_REGISTER = "power_limit_register"
+CONF_POWER_LIMIT_NUMBER_ID = "power_limit_number_id"
 
 CONFIG_SCHEMA = cv.Schema(
     {
@@ -34,10 +35,11 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Required(CONF_AC_FREQUENCY): cv.use_id(sensor.Sensor),
         cv.Required(CONF_TEMPERATURE): cv.use_id(sensor.Sensor),
         cv.Optional(CONF_ENERGY_TOTAL): cv.use_id(sensor.Sensor),
-        cv.Required(CONF_MODBUS_CONTROLLER_ID): cv.use_id(
+        cv.Optional(CONF_MODBUS_CONTROLLER_ID): cv.use_id(
             modbus_controller.ModbusController
         ),
-        cv.Required(CONF_POWER_LIMIT_REGISTER): cv.positive_int,
+        cv.Optional(CONF_POWER_LIMIT_REGISTER): cv.positive_int,
+        cv.Optional(CONF_POWER_LIMIT_NUMBER_ID): cv.use_id(number.Number),
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
@@ -69,6 +71,13 @@ async def to_code(config):
         sens = await cg.get_variable(config[CONF_ENERGY_TOTAL])
         cg.add(var.set_energy_total(sens))
 
-    ctrl = await cg.get_variable(config[CONF_MODBUS_CONTROLLER_ID])
-    cg.add(var.set_modbus_controller(ctrl))
-    cg.add(var.set_power_limit_register(config[CONF_POWER_LIMIT_REGISTER]))
+    if CONF_MODBUS_CONTROLLER_ID in config:
+        ctrl = await cg.get_variable(config[CONF_MODBUS_CONTROLLER_ID])
+        cg.add(var.set_modbus_controller(ctrl))
+
+    if CONF_POWER_LIMIT_REGISTER in config:
+        cg.add(var.set_power_limit_register(config[CONF_POWER_LIMIT_REGISTER]))
+
+    if CONF_POWER_LIMIT_NUMBER_ID in config:
+        num = await cg.get_variable(config[CONF_POWER_LIMIT_NUMBER_ID])
+        cg.add(var.set_power_limit_number(num))
