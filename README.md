@@ -45,9 +45,33 @@ sunspec:
   ac_current: ac_current             # optional
   energy_total: energy_total_wh      # optional
 
-  # Power limit write-back
-  modbus_controller_id: modbus_master
-  power_limit_register: 3051         # Solis RS485 register for power limit (0–100%)
+  # Power limit write-back — option A: via a number entity (recommended)
+  power_limit_number_id: power_limit # ESPHome number entity ID (0–100 = limit %, 110 = unlimited)
+
+  # Power limit write-back — option B: direct Modbus register write (legacy)
+  # modbus_controller_id: modbus_master
+  # power_limit_register: 3051       # Solis RS485 register for power limit
+```
+
+The `power_limit_number_id` approach routes the limit through an existing `modbus_controller` number entity. Define it alongside your other number entities:
+
+```yaml
+number:
+  - platform: modbus_controller
+    modbus_controller_id: modbus_master
+    id: power_limit
+    name: Limit output power
+    register_type: holding
+    address: 3051           # = 3052 - 1 (Solis)
+    value_type: S_WORD
+    unit_of_measurement: '%'
+    entity_category: config
+    icon: mdi:percent
+    skip_updates: 10
+    mode: box
+    min_value: 0
+    max_value: 110
+    multiply: 100
 ```
 
 ### Options
@@ -65,8 +89,9 @@ sunspec:
 | `temperature` | yes | ESPHome sensor ID for inverter temperature (°C) |
 | `ac_current` | no | ESPHome sensor ID for AC current (A) |
 | `energy_total` | no | ESPHome sensor ID for lifetime energy (Wh) |
-| `modbus_controller_id` | yes | ID of your `modbus_controller` component |
-| `power_limit_register` | yes | RS485 register address for power limit on your inverter |
+| `power_limit_number_id` | no | ESPHome `number` entity ID to route power limit through (recommended) |
+| `modbus_controller_id` | no | ID of your `modbus_controller` component (required when using `power_limit_register`) |
+| `power_limit_register` | no | RS485 register address for direct power limit write (legacy) |
 
 ## SunSpec Register Map
 
@@ -82,6 +107,12 @@ sunspec:
 
 Write `WMaxLimPct` (register 40155, range 0–100) and `WMaxLim_Ena` (register 40159, `1` = enabled):
 
+**Via number entity (`power_limit_number_id`, recommended):**
+- When `WMaxLim_Ena = 1`: sets the number entity to `WMaxLimPct` (0–100)
+- When `WMaxLim_Ena = 0`: sets the number entity to `110` (maps to "unlimited" / full power)
+- The number entity's own `multiply` and write logic handles the actual Modbus write
+
+**Via direct register write (`power_limit_register`, legacy):**
 - When `WMaxLim_Ena = 1`: queues a write of `WMaxLimPct` to `power_limit_register` on the inverter
 - When `WMaxLim_Ena = 0`: queues a write of `100` (full power restore)
 - Writes are asynchronous — executed on the Modbus controller's next poll cycle
