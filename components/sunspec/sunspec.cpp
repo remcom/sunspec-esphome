@@ -4,6 +4,8 @@
 #include <cmath>
 #include <fcntl.h>
 #include <errno.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
 #include <arpa/inet.h>
 
 #include "esphome/core/log.h"
@@ -11,6 +13,8 @@
 
 namespace esphome {
 namespace sunspec {
+
+static const char *const TAG = "sunspec";
 
 // ---------- helpers ----------
 
@@ -24,8 +28,9 @@ int16_t SunspecComponent::to_sf(float val, int sf) {
 
 void SunspecComponent::encode_string_(uint16_t *dest, const std::string &s, uint8_t reg_count) {
   // Pack ASCII bytes as big-endian uint16 pairs, null-padded
-  uint8_t buf[reg_count * 2];
-  memset(buf, 0, sizeof(buf));
+  // reg_count is at most 16, so 32 bytes is a safe fixed upper bound
+  uint8_t buf[32];
+  memset(buf, 0, reg_count * 2);
   size_t copy_len = std::min(s.size(), (size_t)(reg_count * 2));
   memcpy(buf, s.c_str(), copy_len);
   for (uint8_t i = 0; i < reg_count; i++) {
@@ -153,7 +158,13 @@ void SunspecComponent::setup() {
 
   // Set non-blocking
   int flags = ::fcntl(server_fd_, F_GETFL, 0);
-  ::fcntl(server_fd_, F_SETFL, flags | O_NONBLOCK);
+  if (flags < 0 || ::fcntl(server_fd_, F_SETFL, flags | O_NONBLOCK) < 0) {
+    ESP_LOGE(TAG, "fcntl() failed: %d", errno);
+    ::close(server_fd_);
+    server_fd_ = -1;
+    mark_failed();
+    return;
+  }
 
   ESP_LOGI(TAG, "SunSpec Modbus TCP server listening on port 502");
 }
@@ -179,7 +190,11 @@ void SunspecComponent::accept_clients_() {
   for (auto &c : clients_) {
     if (c.fd < 0) {
       int flags = ::fcntl(fd, F_GETFL, 0);
-      ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+      if (flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        ESP_LOGW(TAG, "fcntl() failed for client (fd=%d): %d", fd, errno);
+        ::close(fd);
+        return;
+      }
       c.fd           = fd;
       c.buf_len      = 0;
       c.last_recv_ms = millis();
@@ -253,6 +268,7 @@ void SunspecComponent::refresh_sensors_() {
   float pwr = ac_power_->get_state();
   set_reg(40108, (!std::isnan(pwr) && pwr > 5.0f) ? 4 : 1);
 }
+
 void SunspecComponent::process_client_(Client &c) {
   // Timeout check
   if (millis() - c.last_recv_ms > CLIENT_TIMEOUT_MS) {
@@ -324,7 +340,8 @@ void SunspecComponent::handle_frame_(Client &c, uint16_t frame_len) {
       return;
     }
 
-    uint8_t pdu[2 + count * 2];
+    // Max count is 120 registers → 2 + 240 = 242 bytes
+    uint8_t pdu[242];
     pdu[0] = fc;
     pdu[1] = count * 2;
     uint16_t idx = start - BASE_ADDR;
@@ -332,7 +349,7 @@ void SunspecComponent::handle_frame_(Client &c, uint16_t frame_len) {
       pdu[2 + i * 2]     = registers_[idx + i] >> 8;
       pdu[2 + i * 2 + 1] = registers_[idx + i] & 0xFF;
     }
-    send_response_(c.fd, txid, uid, pdu, sizeof(pdu));
+    send_response_(c.fd, txid, uid, pdu, 2 + count * 2);
 
   } else if (fc == 0x06) {
     // FC06: Write Single Register
@@ -385,14 +402,18 @@ void SunspecComponent::handle_frame_(Client &c, uint16_t frame_len) {
 
 void SunspecComponent::send_response_(int fd, uint16_t txid, uint8_t uid,
                                        const uint8_t *pdu, uint8_t pdu_len) {
-  uint8_t frame[7 + pdu_len];
+  // Max frame: 7-byte MBAP header + up to 242-byte PDU = 249 bytes
+  uint8_t frame[249];
   frame[0] = txid >> 8;   frame[1] = txid & 0xFF;
   frame[2] = 0x00;        frame[3] = 0x00;  // Protocol ID
   frame[4] = (1 + pdu_len) >> 8;
   frame[5] = (1 + pdu_len) & 0xFF;
   frame[6] = uid;
   memcpy(frame + 7, pdu, pdu_len);
-  ::send(fd, frame, sizeof(frame), 0);
+  uint16_t frame_len = 7 + pdu_len;
+  if (::send(fd, frame, frame_len, 0) < 0) {
+    ESP_LOGW(TAG, "send() failed (fd=%d): %d", fd, errno);
+  }
 }
 
 void SunspecComponent::send_exception_(int fd, uint16_t txid, uint8_t uid,

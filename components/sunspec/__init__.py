@@ -1,7 +1,7 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import sensor, modbus_controller, number
-from esphome.const import CONF_ID
+from esphome.const import CONF_ID, CONF_VERSION
 
 sunspec_ns = cg.esphome_ns.namespace("sunspec")
 SunspecComponent = sunspec_ns.class_("SunspecComponent", cg.Component)
@@ -9,7 +9,6 @@ SunspecComponent = sunspec_ns.class_("SunspecComponent", cg.Component)
 CONF_MANUFACTURER = "manufacturer"
 CONF_MODEL_NAME = "model"
 CONF_SERIAL_NUMBER = "serial_number"
-CONF_VERSION = "version"
 CONF_RATED_POWER = "rated_power"
 CONF_AC_POWER = "ac_power"
 CONF_AC_VOLTAGE = "ac_voltage"
@@ -21,27 +20,46 @@ CONF_MODBUS_CONTROLLER_ID = "modbus_controller_id"
 CONF_POWER_LIMIT_REGISTER = "power_limit_register"
 CONF_POWER_LIMIT_NUMBER_ID = "power_limit_number_id"
 
-CONFIG_SCHEMA = cv.Schema(
-    {
-        cv.GenerateID(): cv.declare_id(SunspecComponent),
-        cv.Required(CONF_MANUFACTURER): cv.string,
-        cv.Required(CONF_MODEL_NAME): cv.string,
-        cv.Required(CONF_SERIAL_NUMBER): cv.string,
-        cv.Required(CONF_VERSION): cv.string,
-        cv.Required(CONF_RATED_POWER): cv.All(cv.positive_int, cv.Range(max=32767)),
-        cv.Required(CONF_AC_POWER): cv.use_id(sensor.Sensor),
-        cv.Required(CONF_AC_VOLTAGE): cv.use_id(sensor.Sensor),
-        cv.Optional(CONF_AC_CURRENT): cv.use_id(sensor.Sensor),
-        cv.Required(CONF_AC_FREQUENCY): cv.use_id(sensor.Sensor),
-        cv.Required(CONF_TEMPERATURE): cv.use_id(sensor.Sensor),
-        cv.Optional(CONF_ENERGY_TOTAL): cv.use_id(sensor.Sensor),
-        cv.Optional(CONF_MODBUS_CONTROLLER_ID): cv.use_id(
-            modbus_controller.ModbusController
-        ),
-        cv.Optional(CONF_POWER_LIMIT_REGISTER): cv.positive_int,
-        cv.Optional(CONF_POWER_LIMIT_NUMBER_ID): cv.use_id(number.Number),
-    }
-).extend(cv.COMPONENT_SCHEMA)
+
+def _validate_power_limit(config):
+    has_register = CONF_POWER_LIMIT_REGISTER in config
+    has_controller = CONF_MODBUS_CONTROLLER_ID in config
+    if has_register and not has_controller:
+        raise cv.Invalid(
+            f"'{CONF_MODBUS_CONTROLLER_ID}' is required when '{CONF_POWER_LIMIT_REGISTER}' is set"
+        )
+    if has_controller and not has_register:
+        raise cv.Invalid(
+            f"'{CONF_POWER_LIMIT_REGISTER}' is required when '{CONF_MODBUS_CONTROLLER_ID}' is set"
+        )
+    return config
+
+
+CONFIG_SCHEMA = cv.All(
+    cv.Schema(
+        {
+            cv.GenerateID(): cv.declare_id(SunspecComponent),
+            # SunSpec strings are packed into fixed register counts — enforce max lengths
+            cv.Required(CONF_MANUFACTURER): cv.All(cv.string, cv.Length(max=32)),
+            cv.Required(CONF_MODEL_NAME): cv.All(cv.string, cv.Length(max=32)),
+            cv.Required(CONF_SERIAL_NUMBER): cv.All(cv.string, cv.Length(max=32)),
+            cv.Required(CONF_VERSION): cv.All(cv.string, cv.Length(max=16)),
+            cv.Required(CONF_RATED_POWER): cv.All(cv.positive_int, cv.Range(max=32767)),
+            cv.Required(CONF_AC_POWER): cv.use_id(sensor.Sensor),
+            cv.Required(CONF_AC_VOLTAGE): cv.use_id(sensor.Sensor),
+            cv.Optional(CONF_AC_CURRENT): cv.use_id(sensor.Sensor),
+            cv.Required(CONF_AC_FREQUENCY): cv.use_id(sensor.Sensor),
+            cv.Required(CONF_TEMPERATURE): cv.use_id(sensor.Sensor),
+            cv.Optional(CONF_ENERGY_TOTAL): cv.use_id(sensor.Sensor),
+            cv.Optional(CONF_MODBUS_CONTROLLER_ID): cv.use_id(
+                modbus_controller.ModbusController
+            ),
+            cv.Optional(CONF_POWER_LIMIT_REGISTER): cv.positive_int,
+            cv.Optional(CONF_POWER_LIMIT_NUMBER_ID): cv.use_id(number.Number),
+        }
+    ).extend(cv.COMPONENT_SCHEMA),
+    _validate_power_limit,
+)
 
 
 async def to_code(config):

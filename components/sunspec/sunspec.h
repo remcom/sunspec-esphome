@@ -2,11 +2,8 @@
 
 #include <cmath>
 #include <string>
-#include <sys/socket.h>
-#include <netinet/in.h>
 
 #include "esphome/core/component.h"
-#include "esphome/core/log.h"
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/modbus_controller/modbus_controller.h"
 #include "esphome/components/number/number.h"
@@ -14,17 +11,15 @@
 namespace esphome {
 namespace sunspec {
 
-static const char *const TAG = "sunspec";
-
-static const uint16_t BASE_ADDR        = 40000;
-static const uint16_t REG_COUNT        = 200;
-static const uint8_t  MAX_CLIENTS      = 2;
-static const uint16_t MAX_BUF          = 260;
-static const uint32_t CLIENT_TIMEOUT_MS = 10000;
+static constexpr uint16_t BASE_ADDR         = 40000;
+static constexpr uint16_t REG_COUNT         = 200;
+static constexpr uint8_t  MAX_CLIENTS       = 2;
+static constexpr uint16_t MAX_BUF           = 260;
+static constexpr uint32_t CLIENT_TIMEOUT_MS = 10000;
 
 // SunSpec register addresses
-static const uint16_t REG_WMAXLIMPCT   = 40155;
-static const uint16_t REG_WMAXLIM_ENA  = 40159;
+static constexpr uint16_t REG_WMAXLIMPCT  = 40155;
+static constexpr uint16_t REG_WMAXLIM_ENA = 40159;
 
 struct Client {
   int      fd{-1};
