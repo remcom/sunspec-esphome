@@ -8,8 +8,7 @@
 #include "esphome/components/modbus_controller/modbus_controller.h"
 #include "esphome/components/number/number.h"
 
-namespace esphome {
-namespace sunspec {
+namespace esphome::sunspec {
 
 static constexpr uint16_t BASE_ADDR         = 40000;
 static constexpr uint16_t REG_COUNT         = 200;
@@ -32,25 +31,26 @@ class SunspecComponent : public Component {
  public:
   void setup() override;
   void loop() override;
+  void dump_config() override;
   float get_setup_priority() const override { return setup_priority::AFTER_WIFI; }
 
   // Setters called from __init__.py generated code
-  void set_manufacturer(const std::string &s) { manufacturer_ = s; }
-  void set_model(const std::string &s)        { model_ = s; }
-  void set_serial_number(const std::string &s){ serial_number_ = s; }
-  void set_version(const std::string &s)      { version_ = s; }
-  void set_rated_power(uint16_t w)            { rated_power_ = w; }
+  void set_manufacturer(const std::string &s) { this->manufacturer_ = s; }
+  void set_model(const std::string &s)        { this->model_ = s; }
+  void set_serial_number(const std::string &s){ this->serial_number_ = s; }
+  void set_version(const std::string &s)      { this->version_ = s; }
+  void set_rated_power(uint16_t w)            { this->rated_power_ = w; }
 
-  void set_ac_power(sensor::Sensor *s)     { ac_power_ = s; }
-  void set_ac_voltage(sensor::Sensor *s)   { ac_voltage_ = s; }
-  void set_ac_current(sensor::Sensor *s)   { ac_current_ = s; }
-  void set_ac_frequency(sensor::Sensor *s) { ac_frequency_ = s; }
-  void set_temperature(sensor::Sensor *s)  { temperature_ = s; }
-  void set_energy_total(sensor::Sensor *s) { energy_total_ = s; }
+  void set_ac_power(sensor::Sensor *s)     { this->ac_power_ = s; }
+  void set_ac_voltage(sensor::Sensor *s)   { this->ac_voltage_ = s; }
+  void set_ac_current(sensor::Sensor *s)   { this->ac_current_ = s; }
+  void set_ac_frequency(sensor::Sensor *s) { this->ac_frequency_ = s; }
+  void set_temperature(sensor::Sensor *s)  { this->temperature_ = s; }
+  void set_energy_total(sensor::Sensor *s) { this->energy_total_ = s; }
 
-  void set_modbus_controller(modbus_controller::ModbusController *ctrl) { controller_ = ctrl; }
-  void set_power_limit_register(uint16_t reg) { power_limit_register_ = reg; }
-  void set_power_limit_number(number::Number *n) { power_limit_number_ = n; }
+  void set_modbus_controller(modbus_controller::ModbusController *ctrl) { this->controller_ = ctrl; }
+  void set_power_limit_register(uint16_t reg) { this->power_limit_register_ = reg; }
+  void set_power_limit_number(number::Number *n) { this->power_limit_number_ = n; }
 
  protected:
   // Config
@@ -93,11 +93,10 @@ class SunspecComponent : public Component {
   void     close_client_(Client &c);
 
   // Register helpers
-  inline uint16_t  get_reg(uint16_t addr)              { return registers_[addr - BASE_ADDR]; }
-  inline void      set_reg(uint16_t addr, uint16_t v)  { registers_[addr - BASE_ADDR] = v; }
+  inline uint16_t get_reg(uint16_t addr)             { return this->registers_[addr - BASE_ADDR]; }
+  inline void     set_reg(uint16_t addr, uint16_t v) { this->registers_[addr - BASE_ADDR] = v; }
   // Convert float to int16 with given scale factor (e.g. sf=-2 → multiply by 100)
   static int16_t to_sf(float val, int sf);
 };
 
-}  // namespace sunspec
-}  // namespace esphome
+}  // namespace esphome::sunspec

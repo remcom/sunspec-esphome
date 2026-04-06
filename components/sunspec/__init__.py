@@ -3,6 +3,8 @@ import esphome.config_validation as cv
 from esphome.components import sensor, modbus_controller, number
 from esphome.const import CONF_ID, CONF_VERSION
 
+DEPENDENCIES = ["sensor"]
+
 sunspec_ns = cg.esphome_ns.namespace("sunspec")
 SunspecComponent = sunspec_ns.class_("SunspecComponent", cg.Component)
 
@@ -36,6 +38,7 @@ def _validate_power_limit(config):
 
 
 CONFIG_SCHEMA = cv.All(
+    cv.only_with_esp_idf,
     cv.Schema(
         {
             cv.GenerateID(): cv.declare_id(SunspecComponent),
