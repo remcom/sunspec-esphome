@@ -1,5 +1,8 @@
 """Schema validation tests — run without hardware."""
 import pytest
+import sys as _sys
+import os as _os
+_sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
 
 
 def test_rated_power_max():
@@ -28,10 +31,6 @@ def test_manufacturer_is_string():
 
 
 # ---- _validate_phases tests ----
-
-import sys as _sys
-import os as _os
-_sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
 
 
 def _make_base_config():
@@ -154,6 +153,24 @@ def test_validate_phases_3_rejects_ac_voltage():
     config[CONF_AC_VOLTAGE_B] = "sensor_vb"
     config[CONF_AC_VOLTAGE_C] = "sensor_vc"
     with pytest.raises(cv.Invalid, match="ac_voltage"):
+        _validate_phases(config)
+
+
+def test_validate_phases_3_rejects_ac_current():
+    """phases:3 with ac_current (single-phase key) must raise Invalid."""
+    import esphome.config_validation as cv
+    from components.sunspec import (
+        _validate_phases, CONF_PHASES, CONF_AC_CURRENT,
+        CONF_AC_VOLTAGE_A, CONF_AC_VOLTAGE_B, CONF_AC_VOLTAGE_C,
+    )
+
+    config = _make_base_config()
+    config[CONF_PHASES] = 3
+    config[CONF_AC_VOLTAGE_A] = "sensor_va"
+    config[CONF_AC_VOLTAGE_B] = "sensor_vb"
+    config[CONF_AC_VOLTAGE_C] = "sensor_vc"
+    config[CONF_AC_CURRENT] = "sensor_i"
+    with pytest.raises(cv.Invalid, match="ac_current"):
         _validate_phases(config)
 
 
