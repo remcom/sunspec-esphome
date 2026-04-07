@@ -29,7 +29,7 @@ This project follows the official ESPHome coding conventions. Key rules:
 
 - Import constants from `esphome.const` where they exist; define local `CONF_*` strings only when no matching constant exists.
 - Declare `DEPENDENCIES = [...]` for always-required components. Optional components (used only when configured) must NOT be listed — that would force-load them unconditionally.
-- Add `cv.only_with_esp_idf` to `CONFIG_SCHEMA` for any component using POSIX socket APIs — they are ESP-IDF only.
+- Add `cv.only_on_esp32` to `CONFIG_SCHEMA` for any component using POSIX socket APIs — they require ESP32 (both ESP-IDF and Arduino frameworks on ESP32 support these APIs).
 - Use `cv.All(schema, validator_fn)` for cross-field validation (e.g. requiring two options to appear together).
 - Add `cv.Length(max=N)` validators for strings that map to fixed-size SunSpec registers.
 
