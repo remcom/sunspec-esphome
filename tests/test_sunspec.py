@@ -8,6 +8,8 @@ from pymodbus.client import ModbusTcpClient
 
 def pytest_addoption(parser):
     parser.addoption("--device-ip", default=None, help="ESP32 device IP address")
+    parser.addoption("--three-phase", action="store_true", default=False,
+                     help="Run 3-phase inverter tests")
 
 
 @pytest.fixture(scope="module")
@@ -191,3 +193,23 @@ def test_power_limit_disable_restores_full_power(client):
     rr = client.read_holding_registers(40155, 1, slave=1)
     assert not rr.isError()
     assert rr.registers[0] == 100
+
+
+@pytest.fixture(scope="module")
+def three_phase(request):
+    """Skip unless --device-ip and --three-phase are both provided."""
+    ip = request.config.getoption("--device-ip")
+    flag = request.config.getoption("--three-phase", default=False)
+    if ip is None or not flag:
+        pytest.skip("--device-ip and --three-phase required")
+    c = ModbusTcpClient(ip, port=502)
+    c.connect()
+    yield c
+    c.close()
+
+
+def test_model103_id(three_phase):
+    """3-phase: inverter block model ID must be 103."""
+    rr = three_phase.read_holding_registers(40070, 1, slave=1)
+    assert not rr.isError()
+    assert rr.registers[0] == 103, f"Expected 103, got {rr.registers[0]}"

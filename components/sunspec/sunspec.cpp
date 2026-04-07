@@ -59,7 +59,7 @@ void SunspecComponent::init_static_registers_() {
   this->set_reg(40069, 0xFFFF);  // Padding
 
   // --- Inverter Block (Model 101) ---
-  this->set_reg(40070, 101);  // Model ID
+  this->set_reg(40070, this->three_phase_ ? 103 : 101);  // Model ID: 101=single-phase, 103=three-phase
   this->set_reg(40071, 50);   // Length
   // 40072-40075: current -- updated in refresh_sensors_()
   this->set_reg(40076, (uint16_t)(int16_t)(-2));  // Current SF = -2
@@ -121,6 +121,12 @@ void SunspecComponent::setup() {
     return;
   }
 
+  if (this->three_phase_ && (!this->ac_voltage_b_ || !this->ac_voltage_c_)) {
+    ESP_LOGE(TAG, "ac_voltage_b and ac_voltage_c are required when phases: 3");
+    this->mark_failed();
+    return;
+  }
+
   // 2. Initialise register bank
   this->init_static_registers_();
 
@@ -176,6 +182,7 @@ void SunspecComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "  Serial:       %s", this->serial_number_.c_str());
   ESP_LOGCONFIG(TAG, "  Version:      %s", this->version_.c_str());
   ESP_LOGCONFIG(TAG, "  Rated Power:  %u W", this->rated_power_);
+  ESP_LOGCONFIG(TAG, "  Phases:       %d", this->three_phase_ ? 3 : 1);
   ESP_LOGCONFIG(TAG, "  Port:         502");
   if (this->is_failed()) {
     ESP_LOGE(TAG, "  Setup failed!");
