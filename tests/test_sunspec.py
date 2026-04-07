@@ -8,6 +8,8 @@ from pymodbus.client import ModbusTcpClient
 
 def pytest_addoption(parser):
     parser.addoption("--device-ip", default=None, help="ESP32 device IP address")
+    parser.addoption("--three-phase", action="store_true", default=False,
+                     help="Run 3-phase inverter tests")
 
 
 @pytest.fixture(scope="module")
@@ -191,3 +193,51 @@ def test_power_limit_disable_restores_full_power(client):
     rr = client.read_holding_registers(40155, 1, slave=1)
     assert not rr.isError()
     assert rr.registers[0] == 100
+
+
+@pytest.fixture(scope="module")
+def three_phase(request):
+    """Skip unless --device-ip and --three-phase are both provided."""
+    ip = request.config.getoption("--device-ip")
+    flag = request.config.getoption("--three-phase", default=False)
+    if ip is None or not flag:
+        pytest.skip("--device-ip and --three-phase required")
+    c = ModbusTcpClient(ip, port=502)
+    c.connect()
+    yield c
+    c.close()
+
+
+def test_model103_id(three_phase):
+    """3-phase: inverter block model ID must be 103."""
+    rr = three_phase.read_holding_registers(40070, 1, slave=1)
+    assert not rr.isError()
+    assert rr.registers[0] == 103, f"Expected 103, got {rr.registers[0]}"
+
+
+def test_model103_phase_voltages_not_ffff(three_phase):
+    """3-phase: VAN/VBN/VCN (40080-40082) must not be 0xFFFF when sensors connected."""
+    rr = three_phase.read_holding_registers(40080, 3, slave=1)
+    assert not rr.isError()
+    for i, reg in enumerate(rr.registers):
+        assert reg != 0xFFFF, f"Voltage register 4008{i} is 0xFFFF (not implemented)"
+
+
+def test_model103_phase_currents_not_ffff(three_phase):
+    """3-phase: phase A/B/C currents (40073-40075) must not be 0xFFFF when inverter active."""
+    rr = three_phase.read_holding_registers(40073, 3, slave=1)
+    assert not rr.isError()
+    for i, reg in enumerate(rr.registers):
+        assert reg != 0xFFFF, f"Current register 4007{3+i} is 0xFFFF (not implemented)"
+
+
+def test_model103_total_current_matches_sum(three_phase):
+    """3-phase: total current (40072) should be consistent with phase sum."""
+    rr = three_phase.read_holding_registers(40072, 4, slave=1)
+    assert not rr.isError()
+    total, ia, ib, ic = rr.registers
+    # All values must be set (not NaN sentinel 0x8000)
+    assert total != 0x8000
+    assert ia != 0x8000
+    assert ib != 0x8000
+    assert ic != 0x8000

@@ -29,6 +29,8 @@ struct Client {
 
 class SunspecComponent : public Component {
  public:
+  explicit SunspecComponent(bool three_phase) : three_phase_(three_phase) {}
+
   void setup() override;
   void loop() override;
   void dump_config() override;
@@ -48,12 +50,19 @@ class SunspecComponent : public Component {
   void set_temperature(sensor::Sensor *s)  { this->temperature_ = s; }
   void set_energy_total(sensor::Sensor *s) { this->energy_total_ = s; }
 
+  void set_ac_voltage_b(sensor::Sensor *s)   { this->ac_voltage_b_ = s; }
+  void set_ac_voltage_c(sensor::Sensor *s)   { this->ac_voltage_c_ = s; }
+  void set_ac_current_a(sensor::Sensor *s)   { this->ac_current_a_ = s; }
+  void set_ac_current_b(sensor::Sensor *s)   { this->ac_current_b_ = s; }
+  void set_ac_current_c(sensor::Sensor *s)   { this->ac_current_c_ = s; }
+
   void set_modbus_controller(modbus_controller::ModbusController *ctrl) { this->controller_ = ctrl; }
   void set_power_limit_register(uint16_t reg) { this->power_limit_register_ = reg; }
   void set_power_limit_number(number::Number *n) { this->power_limit_number_ = n; }
 
  protected:
   // Config
+  const bool  three_phase_;
   std::string manufacturer_;
   std::string model_;
   std::string serial_number_;
@@ -67,6 +76,12 @@ class SunspecComponent : public Component {
   sensor::Sensor *ac_frequency_{nullptr};
   sensor::Sensor *temperature_{nullptr};
   sensor::Sensor *energy_total_{nullptr};
+
+  sensor::Sensor *ac_voltage_b_{nullptr};
+  sensor::Sensor *ac_voltage_c_{nullptr};
+  sensor::Sensor *ac_current_a_{nullptr};
+  sensor::Sensor *ac_current_b_{nullptr};
+  sensor::Sensor *ac_current_c_{nullptr};
 
   // Modbus write-back
   modbus_controller::ModbusController *controller_{nullptr};
