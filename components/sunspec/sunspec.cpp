@@ -240,32 +240,91 @@ void SunspecComponent::close_client_(Client &c) {
 // ---------- sensor refresh ----------
 
 void SunspecComponent::refresh_sensors_() {
-  // AC current (SF=-2): value x 100, same on total and phase A.
-  // If no current sensor, derive from power / voltage (assuming unity power factor).
-  if (this->ac_current_) {
-    int16_t curr = to_sf(this->ac_current_->get_state(), -2);
-    this->set_reg(40072, (uint16_t) curr);  // AC total current
-    this->set_reg(40073, (uint16_t) curr);  // Phase A current
+  if (this->three_phase_) {
+    // ---- Three-phase (Model 103) ----
+
+    // Phase voltages (SF=-1): VAN, VBN, VCN at 40080-40082
+    this->set_reg(40080, (uint16_t) to_sf(this->ac_voltage_->get_state(),   -1));
+    this->set_reg(40081, (uint16_t) to_sf(this->ac_voltage_b_->get_state(), -1));
+    this->set_reg(40082, (uint16_t) to_sf(this->ac_voltage_c_->get_state(), -1));
+
+    if (this->ac_current_a_) {
+      // Sensor-provided per-phase currents (SF=-2)
+      float ia = this->ac_current_a_->get_state();
+      float ib = this->ac_current_b_->get_state();
+      float ic = this->ac_current_c_->get_state();
+      float total = (!std::isnan(ia) ? ia : 0.0f)
+                  + (!std::isnan(ib) ? ib : 0.0f)
+                  + (!std::isnan(ic) ? ic : 0.0f);
+      this->set_reg(40072, (uint16_t) to_sf(total, -2));
+      this->set_reg(40073, (uint16_t) to_sf(ia, -2));
+      this->set_reg(40074, (uint16_t) to_sf(ib, -2));
+      this->set_reg(40075, (uint16_t) to_sf(ic, -2));
+    } else {
+      // Derive per-phase current: P/3 / V_phase
+      float pwr = this->ac_power_->get_state();
+      float va  = this->ac_voltage_->get_state();
+      float vb  = this->ac_voltage_b_->get_state();
+      float vc  = this->ac_voltage_c_->get_state();
+      float phase_pwr = !std::isnan(pwr) ? pwr / 3.0f : NAN;
+
+      auto derive_curr = [&](float v) -> int16_t {
+        if (!std::isnan(phase_pwr) && !std::isnan(v) && v > 1.0f)
+          return to_sf(phase_pwr / v, -2);
+        return (int16_t) 0x8000;
+      };
+
+      int16_t ia = derive_curr(va);
+      int16_t ib = derive_curr(vb);
+      int16_t ic = derive_curr(vc);
+
+      bool voltages_valid = !std::isnan(va) && !std::isnan(vb) && !std::isnan(vc)
+                            && (va + vb + vc) > 3.0f;
+      uint16_t total_reg;
+      if (!std::isnan(pwr) && voltages_valid) {
+        float avg_v = (va + vb + vc) / 3.0f;
+        total_reg = (uint16_t) to_sf(pwr / avg_v, -2);
+      } else {
+        total_reg = 0x8000;
+      }
+
+      this->set_reg(40072, total_reg);
+      this->set_reg(40073, (uint16_t) ia);
+      this->set_reg(40074, (uint16_t) ib);
+      this->set_reg(40075, (uint16_t) ic);
+    }
+
   } else {
-    float pwr  = this->ac_power_->get_state();
-    float volt = this->ac_voltage_->get_state();
-    if (!std::isnan(pwr) && !std::isnan(volt) && volt > 1.0f) {
-      int16_t curr = to_sf(pwr / volt, -2);
+    // ---- Single-phase (Model 101) ----
+
+    // AC current (SF=-2): derive from power/voltage if no current sensor
+    if (this->ac_current_) {
+      int16_t curr = to_sf(this->ac_current_->get_state(), -2);
       this->set_reg(40072, (uint16_t) curr);
       this->set_reg(40073, (uint16_t) curr);
     } else {
-      this->set_reg(40072, 0x8000);
-      this->set_reg(40073, 0x8000);
+      float pwr  = this->ac_power_->get_state();
+      float volt = this->ac_voltage_->get_state();
+      if (!std::isnan(pwr) && !std::isnan(volt) && volt > 1.0f) {
+        int16_t curr = to_sf(pwr / volt, -2);
+        this->set_reg(40072, (uint16_t) curr);
+        this->set_reg(40073, (uint16_t) curr);
+      } else {
+        this->set_reg(40072, 0x8000);
+        this->set_reg(40073, 0x8000);
+      }
     }
+
+    // AC voltage (SF=-1)
+    this->set_reg(40080, (uint16_t) to_sf(this->ac_voltage_->get_state(), -1));
   }
 
-  // AC voltage (SF=-1): value x 10
-  this->set_reg(40080, (uint16_t) to_sf(this->ac_voltage_->get_state(), -1));
+  // ---- Shared registers (both modes) ----
 
-  // AC power (SF=0): direct watts
+  // AC power (SF=0)
   this->set_reg(40084, (uint16_t) to_sf(this->ac_power_->get_state(), 0));
 
-  // AC frequency (SF=-2): value x 100
+  // AC frequency (SF=-2)
   this->set_reg(40086, (uint16_t) to_sf(this->ac_frequency_->get_state(), -2));
 
   // Energy (uint32, SF=0)
@@ -281,7 +340,7 @@ void SunspecComponent::refresh_sensors_() {
     }
   }
 
-  // Temperature (SF=-1): value x 10
+  // Temperature (SF=-1)
   this->set_reg(40103, (uint16_t) to_sf(this->temperature_->get_state(), -1));
 
   // Inverter state: MPPT (4) if producing, else Off (1)

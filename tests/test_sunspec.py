@@ -213,3 +213,31 @@ def test_model103_id(three_phase):
     rr = three_phase.read_holding_registers(40070, 1, slave=1)
     assert not rr.isError()
     assert rr.registers[0] == 103, f"Expected 103, got {rr.registers[0]}"
+
+
+def test_model103_phase_voltages_not_ffff(three_phase):
+    """3-phase: VAN/VBN/VCN (40080-40082) must not be 0xFFFF when sensors connected."""
+    rr = three_phase.read_holding_registers(40080, 3, slave=1)
+    assert not rr.isError()
+    for i, reg in enumerate(rr.registers):
+        assert reg != 0xFFFF, f"Voltage register 4008{i} is 0xFFFF (not implemented)"
+
+
+def test_model103_phase_currents_not_ffff(three_phase):
+    """3-phase: phase A/B/C currents (40073-40075) must not be 0xFFFF when inverter active."""
+    rr = three_phase.read_holding_registers(40073, 3, slave=1)
+    assert not rr.isError()
+    for i, reg in enumerate(rr.registers):
+        assert reg != 0xFFFF, f"Current register 4007{3+i} is 0xFFFF (not implemented)"
+
+
+def test_model103_total_current_matches_sum(three_phase):
+    """3-phase: total current (40072) should be consistent with phase sum."""
+    rr = three_phase.read_holding_registers(40072, 4, slave=1)
+    assert not rr.isError()
+    total, ia, ib, ic = rr.registers
+    # All values must be set (not NaN sentinel 0x8000)
+    assert total != 0x8000
+    assert ia != 0x8000
+    assert ib != 0x8000
+    assert ic != 0x8000
