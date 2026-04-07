@@ -29,6 +29,8 @@ struct Client {
 
 class SunspecComponent : public Component {
  public:
+  explicit SunspecComponent(bool three_phase) : three_phase_(three_phase) {}
+
   void setup() override;
   void loop() override;
   void dump_config() override;
@@ -48,7 +50,6 @@ class SunspecComponent : public Component {
   void set_temperature(sensor::Sensor *s)  { this->temperature_ = s; }
   void set_energy_total(sensor::Sensor *s) { this->energy_total_ = s; }
 
-  void set_three_phase(bool v)               { this->three_phase_ = v; }
   void set_ac_voltage_b(sensor::Sensor *s)   { this->ac_voltage_b_ = s; }
   void set_ac_voltage_c(sensor::Sensor *s)   { this->ac_voltage_c_ = s; }
   void set_ac_current_a(sensor::Sensor *s)   { this->ac_current_a_ = s; }
@@ -61,6 +62,7 @@ class SunspecComponent : public Component {
 
  protected:
   // Config
+  const bool  three_phase_;
   std::string manufacturer_;
   std::string model_;
   std::string serial_number_;
@@ -75,7 +77,6 @@ class SunspecComponent : public Component {
   sensor::Sensor *temperature_{nullptr};
   sensor::Sensor *energy_total_{nullptr};
 
-  bool            three_phase_{false};
   sensor::Sensor *ac_voltage_b_{nullptr};
   sensor::Sensor *ac_voltage_c_{nullptr};
   sensor::Sensor *ac_current_a_{nullptr};

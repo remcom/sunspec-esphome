@@ -120,7 +120,8 @@ CONFIG_SCHEMA = cv.All(
 
 
 async def to_code(config):
-    var = cg.new_Pvariable(config[CONF_ID])
+    three_phase = config[CONF_PHASES] == 3
+    var = cg.new_Pvariable(config[CONF_ID], three_phase)
     await cg.register_component(var, config)
 
     cg.add(var.set_manufacturer(config[CONF_MANUFACTURER]))
@@ -128,9 +129,6 @@ async def to_code(config):
     cg.add(var.set_serial_number(config[CONF_SERIAL_NUMBER]))
     cg.add(var.set_version(config[CONF_VERSION]))
     cg.add(var.set_rated_power(config[CONF_RATED_POWER]))
-
-    three_phase = config[CONF_PHASES] == 3
-    cg.add(var.set_three_phase(three_phase))
 
     if three_phase:
         for conf_key, setter in [

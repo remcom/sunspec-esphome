@@ -65,7 +65,7 @@ void SunspecComponent::init_static_registers_() {
   this->set_reg(40076, (uint16_t)(int16_t)(-2));  // Current SF = -2
   // 40077-40079: phase voltage AB/BC/CA -- stay 0xFFFF
   // 40080: Volts AN -- updated in refresh_sensors_()
-  // 40081-40082: BN/CN -- stay 0xFFFF
+  // 40081-40082: BN/CN -- updated in refresh_sensors_() for 3-phase, else 0xFFFF
   this->set_reg(40083, (uint16_t)(int16_t)(-1));  // Voltage SF = -1
   // 40084: AC power -- updated in refresh_sensors_()
   this->set_reg(40085, 0);  // Power SF = 0
