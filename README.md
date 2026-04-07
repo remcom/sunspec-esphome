@@ -56,7 +56,7 @@ sunspec:
   # power_limit_register: 3051       # Solis RS485 register for power limit
 ```
 
-**Three-phase (Model 103):**
+**Three-phase (Model 103) — experimental, not hardware-tested:**
 
 ```yaml
 sunspec:
@@ -167,4 +167,5 @@ On ESP32 reboot, `WMaxLim_Ena` defaults to `0` and `WMaxLimPct` defaults to `100
 - One inverter instance per ESP32
 - No persistent energy counter across reboots
 - No WMaxLimPct auto-revert timer (field present but always 0)
+- Three-phase support (Model 103) is **not hardware-tested** — use with caution and report issues
 - Three-phase derived currents assume unity power factor per phase
