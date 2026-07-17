@@ -1,16 +1,12 @@
 #include "modbus_tcp.h"
+#include "esphome/core/hal.h"
 #include "esphome/core/log.h"
 
-#ifdef USE_ESP32
-#include <lwip/sockets.h>
 #include <lwip/netdb.h>
-#else
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <unistd.h>
-#endif
+#include <lwip/sockets.h>
+
+#include <cerrno>
+#include <cstring>
 
 namespace esphome {
 namespace sunspec {
@@ -24,9 +20,9 @@ void ModbusDevice::send_error(uint8_t function_code, ModbusExceptionCode excepti
   response.push_back(function_code | 0x80);  // Error function code
   response.push_back(static_cast<uint8_t>(exception_code));
 
-  if (this->active_tcp_server_) {
-    auto *tcp = static_cast<modbus_tcp::ModbusTCP *>(this->active_tcp_server_);
-    tcp->send_response(this->active_conn_id_, this->active_transaction_id_, this->active_unit_id_, response);
+  if (this->active_tcp_server_ != nullptr) {
+    this->active_tcp_server_->send_response(this->active_conn_id_, this->active_transaction_id_,
+                                            this->active_unit_id_, response);
   }
 }
 
@@ -34,32 +30,30 @@ void ModbusDevice::send_error(uint8_t function_code, ModbusExceptionCode excepti
 
 namespace modbus_tcp {
 
-ModbusTCP::ModbusTCP() { this->connections_.resize(8); }
+// Modbus TCP servers must accept requests addressed to unit ID 0xFF (the
+// recommended default for devices without a unit hierarchy, per the Modbus
+// Messaging on TCP/IP Implementation Guide)
+static constexpr uint8_t UNIT_ID_DEFAULT = 0xFF;
 
 ModbusTCP::~ModbusTCP() {
-  // Close all connections
   for (size_t i = 0; i < this->connections_.size(); i++) {
     close_connection_(i);
   }
-  // Close server socket
   if (this->server_socket_ >= 0) {
     close(this->server_socket_);
     this->server_socket_ = -1;
   }
 }
 
-void ModbusTCP::setup() {
-  ESP_LOGCONFIG(TAG, "Setting up Modbus TCP server on port %d...", this->port_);
+bool ModbusTCP::setup() {
+  this->connections_.resize(this->max_connections_);
 
-  // Create server socket
   this->server_socket_ = socket(AF_INET, SOCK_STREAM, 0);
   if (this->server_socket_ < 0) {
     ESP_LOGE(TAG, "Failed to create socket: errno %d", errno);
-    this->mark_failed();
-    return;
+    return false;
   }
 
-  // Set socket options
   int opt = 1;
   if (setsockopt(this->server_socket_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
     ESP_LOGW(TAG, "Failed to set SO_REUSEADDR: errno %d", errno);
@@ -69,7 +63,6 @@ void ModbusTCP::setup() {
   int flags = fcntl(this->server_socket_, F_GETFL, 0);
   fcntl(this->server_socket_, F_SETFL, flags | O_NONBLOCK);
 
-  // Bind to port
   struct sockaddr_in server_addr;
   memset(&server_addr, 0, sizeof(server_addr));
   server_addr.sin_family = AF_INET;
@@ -78,18 +71,15 @@ void ModbusTCP::setup() {
 
   if (bind(this->server_socket_, (struct sockaddr *) &server_addr, sizeof(server_addr)) < 0) {
     ESP_LOGE(TAG, "Failed to bind socket: errno %d", errno);
-    this->mark_failed();
-    return;
+    return false;
   }
 
-  // Listen for connections
   if (listen(this->server_socket_, this->max_connections_) < 0) {
     ESP_LOGE(TAG, "Failed to listen: errno %d", errno);
-    this->mark_failed();
-    return;
+    return false;
   }
 
-  ESP_LOGCONFIG(TAG, "Modbus TCP server listening on port %d", this->port_);
+  return true;
 }
 
 void ModbusTCP::loop() {
@@ -99,28 +89,36 @@ void ModbusTCP::loop() {
   // Accept new connections
   accept_connection_();
 
-  // Handle existing connections
+  // Handle existing connections; reap ones that have been silent too long
+  uint32_t now = millis();
   for (size_t i = 0; i < this->connections_.size(); i++) {
-    if (this->connections_[i].active) {
-      handle_client_(i);
+    if (!this->connections_[i].active)
+      continue;
+    if (now - this->connections_[i].last_activity > IDLE_TIMEOUT_MS) {
+      ESP_LOGI(TAG, "Closing idle client %u", i);
+      close_connection_(i);
+      continue;
     }
+    handle_client_(i);
   }
 }
 
-void ModbusTCP::dump_config() {
-  ESP_LOGCONFIG(TAG, "Modbus TCP:");
-  ESP_LOGCONFIG(TAG, "  Port: %d", this->port_);
-  ESP_LOGCONFIG(TAG, "  Max Connections: %d", this->max_connections_);
-  ESP_LOGCONFIG(TAG, "  Registered Devices: %d", this->devices_.size());
+uint8_t ModbusTCP::get_client_count() const {
+  uint8_t count = 0;
+  for (const auto &conn : this->connections_) {
+    if (conn.active)
+      count++;
+  }
+  return count;
 }
 
 void ModbusTCP::register_device(modbus::ModbusDevice *device) {
   this->devices_.push_back(device);
-  ESP_LOGD(TAG, "Registered device at address 0x%02X", device->address_);
+  ESP_LOGD(TAG, "Registered device at unit address 0x%02X", device->address_);
 }
 
 void ModbusTCP::send_response(size_t conn_id, uint16_t transaction_id, uint8_t unit_id,
-                               const std::vector<uint8_t> &data) {
+                              const std::vector<uint8_t> &data) {
   if (conn_id >= this->connections_.size() || !this->connections_[conn_id].active) {
     return;
   }
@@ -148,15 +146,38 @@ void ModbusTCP::send_response(size_t conn_id, uint16_t transaction_id, uint8_t u
   // PDU data
   response.insert(response.end(), data.begin(), data.end());
 
-  // Send response
+  // Send, handling partial writes on the non-blocking socket
   int sock = this->connections_[conn_id].socket;
-  ssize_t sent = send(sock, response.data(), response.size(), 0);
-  if (sent < 0) {
+  size_t offset = 0;
+  int retries = 0;
+  while (offset < response.size()) {
+    ssize_t sent = send(sock, response.data() + offset, response.size() - offset, 0);
+    if (sent > 0) {
+      offset += sent;
+      continue;
+    }
+    if (sent < 0 && (errno == EWOULDBLOCK || errno == EAGAIN)) {
+      if (++retries > 50) {
+        ESP_LOGW(TAG, "Send timed out on client %u", conn_id);
+        close_connection_(conn_id);
+        return;
+      }
+      delay(1);
+      continue;
+    }
     ESP_LOGW(TAG, "Failed to send response: errno %d", errno);
     close_connection_(conn_id);
-  } else {
-    ESP_LOGD(TAG, "Sent %d bytes to client %d", sent, conn_id);
+    return;
   }
+  ESP_LOGD(TAG, "Sent %u bytes to client %u", response.size(), conn_id);
+}
+
+void ModbusTCP::send_exception_(size_t conn_id, uint16_t transaction_id, uint8_t unit_id, uint8_t function_code,
+                                modbus::ModbusExceptionCode exception_code) {
+  std::vector<uint8_t> response;
+  response.push_back(function_code | 0x80);
+  response.push_back(static_cast<uint8_t>(exception_code));
+  this->send_response(conn_id, transaction_id, unit_id, response);
 }
 
 void ModbusTCP::accept_connection_() {
@@ -179,7 +200,7 @@ void ModbusTCP::accept_connection_() {
     }
   }
 
-  if (conn_id >= this->max_connections_) {
+  if (conn_id >= this->connections_.size()) {
     ESP_LOGW(TAG, "Max connections reached, rejecting new connection");
     close(client_socket);
     return;
@@ -189,11 +210,17 @@ void ModbusTCP::accept_connection_() {
   int flags = fcntl(client_socket, F_GETFL, 0);
   fcntl(client_socket, F_SETFL, flags | O_NONBLOCK);
 
+  // Small responses to poll requests should not wait for Nagle
+  int opt = 1;
+  setsockopt(client_socket, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+  setsockopt(client_socket, SOL_SOCKET, SO_KEEPALIVE, &opt, sizeof(opt));
+
   // Store connection
   this->connections_[conn_id].socket = client_socket;
   this->connections_[conn_id].active = true;
+  this->connections_[conn_id].last_activity = millis();
 
-  ESP_LOGI(TAG, "New client connected (slot %d) from %s", conn_id, inet_ntoa(client_addr.sin_addr));
+  ESP_LOGI(TAG, "New client connected (slot %u) from %s", conn_id, inet_ntoa(client_addr.sin_addr));
 }
 
 void ModbusTCP::handle_client_(size_t conn_id) {
@@ -205,14 +232,14 @@ void ModbusTCP::handle_client_(size_t conn_id) {
 
   if (header_len == 0) {
     // Connection closed
-    ESP_LOGD(TAG, "Client %d disconnected", conn_id);
+    ESP_LOGD(TAG, "Client %u disconnected", conn_id);
     close_connection_(conn_id);
     return;
   }
 
   if (header_len < 0) {
     if (errno != EWOULDBLOCK && errno != EAGAIN) {
-      ESP_LOGW(TAG, "Recv error on client %d: errno %d", conn_id, errno);
+      ESP_LOGW(TAG, "Recv error on client %u: errno %d", conn_id, errno);
       close_connection_(conn_id);
     }
     return;
@@ -239,7 +266,7 @@ void ModbusTCP::handle_client_(size_t conn_id) {
   size_t total_len = 7 + length - 1;  // MBAP header + PDU (length includes unit ID)
   uint8_t buffer[256];
   if (total_len > sizeof(buffer)) {
-    ESP_LOGW(TAG, "Request too large: %d bytes", total_len);
+    ESP_LOGW(TAG, "Request too large: %u bytes", total_len);
     close_connection_(conn_id);
     return;
   }
@@ -252,6 +279,7 @@ void ModbusTCP::handle_client_(size_t conn_id) {
 
   // Consume the data
   recv(sock, buffer, total_len, 0);
+  this->connections_[conn_id].last_activity = millis();
 
   // Extract PDU (skip MBAP header)
   if (length < 2) {
@@ -262,7 +290,8 @@ void ModbusTCP::handle_client_(size_t conn_id) {
   uint8_t function_code = buffer[7];
   std::vector<uint8_t> pdu_data(buffer + 8, buffer + total_len);
 
-  ESP_LOGD(TAG, "Request: TID=%d, Unit=%d, FC=0x%02X, Len=%d", transaction_id, unit_id, function_code, pdu_data.size());
+  ESP_LOGD(TAG, "Request: TID=%d, Unit=%d, FC=0x%02X, Len=%u", transaction_id, unit_id, function_code,
+           pdu_data.size());
 
   // Process the request
   process_modbus_request_(conn_id, transaction_id, unit_id, function_code, pdu_data);
@@ -281,17 +310,19 @@ void ModbusTCP::close_connection_(size_t conn_id) {
 
 void ModbusTCP::process_modbus_request_(size_t conn_id, uint16_t transaction_id, uint8_t unit_id,
                                         uint8_t function_code, const std::vector<uint8_t> &data) {
-  // Find the device with matching address
+  // Find the device with matching address; 0xFF addresses the (single) device directly
   modbus::ModbusDevice *device = nullptr;
   for (auto *dev : this->devices_) {
-    if (dev->address_ == unit_id) {
+    if (dev->address_ == unit_id || (unit_id == UNIT_ID_DEFAULT && !this->devices_.empty())) {
       device = dev;
       break;
     }
   }
 
-  if (!device) {
+  if (device == nullptr) {
     ESP_LOGW(TAG, "No device found for unit ID 0x%02X", unit_id);
+    this->send_exception_(conn_id, transaction_id, unit_id, function_code,
+                          modbus::ModbusExceptionCode::GATEWAY_TARGET_DEVICE_FAILED_TO_RESPOND);
     return;
   }
 
@@ -306,6 +337,8 @@ void ModbusTCP::process_modbus_request_(size_t conn_id, uint16_t transaction_id,
     // Read Holding Registers (0x03) or Read Input Registers (0x04)
     if (data.size() < 4) {
       ESP_LOGW(TAG, "Invalid read registers request");
+      this->send_exception_(conn_id, transaction_id, unit_id, function_code,
+                            modbus::ModbusExceptionCode::ILLEGAL_DATA_VALUE);
       return;
     }
 
@@ -313,9 +346,45 @@ void ModbusTCP::process_modbus_request_(size_t conn_id, uint16_t transaction_id,
     uint16_t num_registers = (data[2] << 8) | data[3];
 
     device->on_modbus_read_registers(function_code, start_address, num_registers);
+  } else if (function_code == 0x06) {
+    // Write Single Register
+    if (data.size() < 4) {
+      this->send_exception_(conn_id, transaction_id, unit_id, function_code,
+                            modbus::ModbusExceptionCode::ILLEGAL_DATA_VALUE);
+      return;
+    }
+
+    uint16_t address = (data[0] << 8) | data[1];
+    std::vector<uint16_t> values{static_cast<uint16_t>((data[2] << 8) | data[3])};
+    device->on_modbus_write_registers(function_code, address, values);
+  } else if (function_code == 0x10) {
+    // Write Multiple Registers
+    if (data.size() < 5) {
+      this->send_exception_(conn_id, transaction_id, unit_id, function_code,
+                            modbus::ModbusExceptionCode::ILLEGAL_DATA_VALUE);
+      return;
+    }
+
+    uint16_t start_address = (data[0] << 8) | data[1];
+    uint16_t num_registers = (data[2] << 8) | data[3];
+    uint8_t byte_count = data[4];
+    if (num_registers == 0 || num_registers > 123 || byte_count != num_registers * 2 ||
+        data.size() < static_cast<size_t>(5 + byte_count)) {
+      this->send_exception_(conn_id, transaction_id, unit_id, function_code,
+                            modbus::ModbusExceptionCode::ILLEGAL_DATA_VALUE);
+      return;
+    }
+
+    std::vector<uint16_t> values;
+    values.reserve(num_registers);
+    for (uint16_t i = 0; i < num_registers; i++) {
+      values.push_back((data[5 + i * 2] << 8) | data[6 + i * 2]);
+    }
+    device->on_modbus_write_registers(function_code, start_address, values);
   } else {
-    // Other function codes - pass raw data
-    device->on_modbus_data(data);
+    // Unsupported function code
+    this->send_exception_(conn_id, transaction_id, unit_id, function_code,
+                          modbus::ModbusExceptionCode::ILLEGAL_FUNCTION);
   }
 }
 

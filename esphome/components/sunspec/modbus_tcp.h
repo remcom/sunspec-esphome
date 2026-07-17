@@ -1,16 +1,8 @@
 #pragma once
 
-#include "esphome/core/component.h"
 #include "modbus.h"
 
-#ifdef USE_ESP32
-#include <lwip/sockets.h>
-#else
-#include <sys/socket.h>
-#endif
-
 #include <vector>
-#include <map>
 
 namespace esphome {
 namespace sunspec {
@@ -19,18 +11,17 @@ namespace modbus_tcp {
 struct ClientConnection {
   int socket{-1};
   bool active{false};
+  uint32_t last_activity{0};
 };
 
-/// Modbus TCP server
-class ModbusTCP : public Component {
+/// Modbus TCP server (ESP32 / lwip only)
+class ModbusTCP {
  public:
-  ModbusTCP();
   ~ModbusTCP();
 
-  void setup() override;
-  void loop() override;
-  void dump_config() override;
-  float get_setup_priority() const override { return setup_priority::AFTER_WIFI; }
+  /// Create the listening socket. Returns false on failure.
+  bool setup();
+  void loop();
 
   /// Set the TCP port to listen on
   void set_port(uint16_t port) { this->port_ = port; }
@@ -38,12 +29,17 @@ class ModbusTCP : public Component {
   /// Set the maximum number of concurrent connections
   void set_max_connections(uint8_t max_connections) { this->max_connections_ = max_connections; }
 
+  uint16_t get_port() const { return this->port_; }
+  uint8_t get_max_connections() const { return this->max_connections_; }
+
+  /// Number of currently connected clients
+  uint8_t get_client_count() const;
+
   /// Register a Modbus device
   void register_device(modbus::ModbusDevice *device);
 
   /// Send a response to a client
-  void send_response(size_t conn_id, uint16_t transaction_id, uint8_t unit_id,
-                     const std::vector<uint8_t> &data);
+  void send_response(size_t conn_id, uint16_t transaction_id, uint8_t unit_id, const std::vector<uint8_t> &data);
 
   /// Get active connection context (for use by devices during callbacks)
   size_t get_active_conn_id() const { return this->active_conn_id_; }
@@ -54,8 +50,13 @@ class ModbusTCP : public Component {
   void accept_connection_();
   void handle_client_(size_t conn_id);
   void close_connection_(size_t conn_id);
-  void process_modbus_request_(size_t conn_id, uint16_t transaction_id, uint8_t unit_id,
-                               uint8_t function_code, const std::vector<uint8_t> &data);
+  void process_modbus_request_(size_t conn_id, uint16_t transaction_id, uint8_t unit_id, uint8_t function_code,
+                               const std::vector<uint8_t> &data);
+  void send_exception_(size_t conn_id, uint16_t transaction_id, uint8_t unit_id, uint8_t function_code,
+                       modbus::ModbusExceptionCode exception_code);
+
+  // Connections silent for longer than this are closed to free up slots
+  static constexpr uint32_t IDLE_TIMEOUT_MS = 300000;  // 5 minutes
 
   uint16_t port_{502};
   uint8_t max_connections_{4};

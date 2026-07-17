@@ -1,0 +1,89 @@
+esphome:
+  name: sunspec-test
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+external_components:
+  - source:
+      type: local
+      path: ../esphome/components
+
+logger:
+
+wifi:
+  ssid: "test-network"
+  password: "test-password"
+
+sensor:
+  - platform: template
+    id: pv_ac_power
+    lambda: "return 1500.0;"
+    update_interval: 10s
+  - platform: template
+    id: pv_ac_voltage
+    lambda: "return 230.0;"
+    update_interval: 10s
+  - platform: template
+    id: pv_ac_current
+    lambda: "return 6.5;"
+    update_interval: 10s
+  - platform: template
+    id: pv_frequency
+    lambda: "return 50.0;"
+    update_interval: 10s
+  - platform: template
+    id: pv_dc_power
+    lambda: "return 1550.0;"
+    update_interval: 10s
+  - platform: template
+    id: pv_energy
+    lambda: "return 1234567.0;"
+    update_interval: 60s
+  - platform: template
+    id: pv_temperature
+    lambda: "return 42.0;"
+    update_interval: 60s
+  # Diagnostics: connected Modbus clients
+  - platform: template
+    name: "SunSpec Clients"
+    lambda: "return id(sunspec_server).get_client_count();"
+    update_interval: 60s
+    accuracy_decimals: 0
+
+sunspec:
+  - id: sunspec_server
+    port: 502
+    manufacturer: "ESPHome"
+    model: "Test Inverter"
+    serial_number: "SN12345678"
+    version: "1.0"
+    stale_timeout: 5min
+    inverter_single_phase:
+      ac_power: pv_ac_power
+      ac_voltage: pv_ac_voltage
+      ac_current: pv_ac_current
+      ac_frequency: pv_frequency
+      dc_power: pv_dc_power
+      temperature: pv_temperature
+      energy: pv_energy
+    controls:
+      on_power_limit:
+        - logger.log:
+            format: "Power limit set to %.2f%% (enabled=%d)"
+            args: ["level", "enabled"]
+  # Second server: three-phase, no controls, alternate port
+  - id: sunspec_server_3ph
+    port: 1502
+    address: 2
+    manufacturer: "ESPHome"
+    model: "Test Inverter 3ph"
+    inverter_three_phase:
+      ac_power: pv_ac_power
+      ac_current: pv_ac_current
+      ac_current_phase_a: pv_ac_current
+      ac_voltage_phase_a: pv_ac_voltage
+      ac_frequency: pv_frequency
+      energy: pv_energy
