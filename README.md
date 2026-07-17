@@ -36,7 +36,7 @@ external_components:
 sunspec:
   # Server settings (all optional)
   port: 502
-  address: 1               # Modbus unit address (0xFF is always accepted too)
+  address: 1               # reported in the Model 1 DA register (any unit ID is served)
   max_connections: 4       # 1-8 simultaneous TCP clients
   stale_timeout: 5min      # report sensors as unavailable after this; 0s disables
 
@@ -106,7 +106,7 @@ number:
 | Key | Required | Description |
 |-----|----------|-------------|
 | `port` | no | TCP port to listen on (default `502`) |
-| `address` | no | Modbus unit address, 1–247 (default `1`); unit ID `0xFF` is always accepted |
+| `address` | no | Modbus unit address reported in the Model 1 DA register, 1–247 (default `1`); requests for any unit ID are served |
 | `max_connections` | no | Simultaneous TCP clients, 1–8 (default `4`) |
 | `stale_timeout` | no | Mark sensor values "not implemented" after no update for this long (default `5min`, `0s` disables) |
 | `manufacturer` | yes | Manufacturer string (max 32 chars) |

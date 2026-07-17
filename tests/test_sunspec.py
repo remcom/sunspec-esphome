@@ -136,17 +136,12 @@ def test_fc04_reads_same_bank(client):
     assert rr.registers == [0x5375, 0x6E53]
 
 
-def test_unknown_unit_id_rejected(client):
-    """Requests for a unit ID other than the configured one or 0xFF must error."""
-    rr = client.read_holding_registers(40000, 2, slave=42)
-    assert rr.isError() or rr.function_code == 0x83
-
-
-def test_unit_id_ff_accepted(client):
-    """Unit ID 0xFF (Modbus TCP default) must be accepted."""
-    rr = client.read_holding_registers(40000, 2, slave=0xFF)
-    assert not rr.isError()
-    assert rr.registers == [0x5375, 0x6E53]
+def test_any_unit_id_served(client):
+    """Any unit ID must be served (clients probe various IDs during discovery)."""
+    for uid in (42, 126, 0xFF):
+        rr = client.read_holding_registers(40000, 2, slave=uid)
+        assert not rr.isError(), f"unit {uid} not served"
+        assert rr.registers == [0x5375, 0x6E53]
 
 
 def test_fc06_write_wmaxlimpct(client):

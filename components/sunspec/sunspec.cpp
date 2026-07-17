@@ -470,12 +470,13 @@ void SunspecComponent::handle_frame_(Client &c, uint16_t frame_len) {
   uint8_t  uid  = c.buf[6];
   uint8_t  fc   = c.buf[7];
 
-  // Respond to the configured unit address and 0xFF (the recommended default
-  // for TCP devices without a unit hierarchy, per the Modbus TCP guide)
+  // Serve any unit ID: SunSpec clients probe at various unit IDs during
+  // discovery (e.g. Victron scans IDs other than 1), and as a single-device
+  // bridge there is nothing else a request could be routed to. The response
+  // echoes the request's unit ID; the configured address is only reported in
+  // the Model 1 DA register.
   if (uid != this->unit_address_ && uid != 0xFF) {
-    ESP_LOGD(TAG, "Ignoring request for unit %u (fd=%d)", uid, c.fd);
-    this->send_exception_(c, txid, uid, fc, 0x0B);  // Gateway Target Failed To Respond
-    return;
+    ESP_LOGVV(TAG, "Serving request for unit %u (configured: %u)", uid, this->unit_address_);
   }
 
   if (fc == 0x03 || fc == 0x04) {
