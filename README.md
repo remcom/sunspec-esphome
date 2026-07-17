@@ -1,128 +1,122 @@
 # sunspec-esphome
 
-Custom ESPHome external component that runs a **SunSpec Modbus TCP server** (port 502) directly on an ESP32. It reads live inverter data from existing ESPHome sensors and serves it to any SunSpec-compatible energy manager (Victron, SolarEdge, Fronius, etc.). It also accepts power limit commands from SunSpec clients and relays them back to the inverter over RS485 Modbus.
+An [ESPHome](https://esphome.io) external component that emulates a **SunSpec-compatible PV inverter** over Modbus TCP. Point any SunSpec client (Home Assistant's SunSpec integration, pysunspec2, energy managers, zero-export controllers, wallboxes) at your ESP32 and it will see a standards-compliant inverter fed by your own ESPHome sensors.
 
-Built for a **Solis single-phase inverter** bridged via an ESP32 (m5stack-atom, ESP-IDF), but the sensor IDs and power limit register are configurable via YAML.
+**ESP32 only** (uses lwip sockets). Requires ESPHome 2026.7 or newer.
 
 ## Features
 
-- SunSpec Models 1 (Common), 101 (Single-phase inverter), 120 (Nameplate), 123 (Controls)
-- FC03 read holding registers
-- FC06 / FC16 write — power limit (WMaxLimPct) and enable (WMaxLim_Ena)
-- Power limit write-back to inverter over RS485 via `modbus_controller`
-- Up to 2 simultaneous Modbus TCP clients
-- ESP-IDF target (not Arduino)
+- **Model 1 (Common)** — manufacturer, model, serial number, version
+- **Model 101 (Single Phase Inverter)** or **Model 103 (Three Phase Inverter)** — AC/DC power, voltage, current, frequency, temperature, lifetime energy, all fed from ESPHome sensors
+- **Model 123 (Immediate Controls)** — optional; accepts power-limit commands (FC 0x06 / 0x10 writes to `WMaxLimPct` / `WMaxLim_Ena`) and fires an ESPHome automation, so you can use the device as the receiving end of a zero-export / curtailment controller
+- Operating state (`St`) derived from AC power: producing → `MPPT`, ~0 W → `SLEEPING`, sensor stale → `OFF`
+- Stale-data protection: points revert to the SunSpec "not implemented" sentinel when their sensor stops updating
+- Modbus TCP server with multiple client connections, idle-connection reaping, keepalive, and proper exception responses
 
 ## Installation
 
 ```yaml
 external_components:
-  - source:
-      type: git
-      url: https://github.com/remcom/sunspec-esphome
-      ref: master
-    refresh: 0d
-    components:
-      - sunspec
+  - source: github://remcom/sunspec-esphome
+    components: [sunspec]
 ```
 
-## Configuration
+## Example
 
 ```yaml
 sunspec:
-  # Device identification (shown to SunSpec clients)
-  manufacturer: "Solis"
-  model: "S6-GR1P3K-M"
-  serial_number: "12345678"
-  version: "1.0.0"
-  rated_power: 3000        # watts, max 32767
-
-  # Sensor references (ESPHome sensor IDs)
-  ac_power: ac_power                 # required
-  ac_voltage: ac_voltage             # required
-  ac_frequency: ac_frequency         # required
-  temperature: inverter_temp         # required
-  ac_current: ac_current             # optional
-  energy_total: energy_total_wh      # optional
-
-  # Power limit write-back — option A: via a number entity (recommended)
-  power_limit_number_id: power_limit # ESPHome number entity ID (0–100 = limit %, 110 = unlimited)
-
-  # Power limit write-back — option B: direct Modbus register write (legacy)
-  # modbus_controller_id: modbus_master
-  # power_limit_register: 3051       # Solis RS485 register for power limit
+  - manufacturer: "ESPHome"
+    model: "Garage PV"
+    serial_number: "SN12345678"
+    inverter_single_phase:
+      ac_power: pv_ac_power        # W
+      ac_voltage: pv_ac_voltage    # V
+      ac_current: pv_ac_current    # A
+      ac_frequency: pv_frequency   # Hz
+      dc_power: pv_dc_power        # W
+      temperature: pv_temperature  # °C
+      energy: pv_energy            # Wh, lifetime total
+    controls:
+      on_power_limit:
+        - logger.log:
+            format: "Limit %.2f%% (enabled=%d)"
+            args: ["level", "enabled"]
 ```
 
-The `power_limit_number_id` approach routes the limit through an existing `modbus_controller` number entity. Define it alongside your other number entities:
+All sensors are optional and must publish **base units**: W, V, A, Hz, °C, Wh. Unconfigured points read as SunSpec "not implemented".
+
+## Configuration reference
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `port` | `502` | TCP port to listen on (must be unique per server instance) |
+| `max_connections` | `4` | Concurrent Modbus TCP clients (1–8) |
+| `base_address` | `40000` | Modbus register base of the SunSpec map |
+| `address` | `1` | Modbus unit ID (unit ID `255` is also always accepted) |
+| `stale_timeout` | `5min` | Revert points to "not implemented" when their sensor hasn't updated for this long (`0s` disables) |
+| `manufacturer` | required | Model 1 `Mn` (max 32 chars) |
+| `model` | required | Model 1 `Md` (max 32 chars) |
+| `serial_number` | — | Model 1 `SN` (max 32 chars) |
+| `version` | `"1.0"` | Model 1 `Vr` (max 16 chars) |
+| `inverter_single_phase` | — | Model 101 sensor block (see below) |
+| `inverter_three_phase` | — | Model 103 sensor block (mutually exclusive with single phase) |
+| `controls` | — | Enables Model 123; supports `on_power_limit` automations |
+
+### Sensor blocks
+
+`inverter_single_phase`: `ac_power`, `ac_voltage`, `ac_current`, `ac_frequency`, `dc_power`, `dc_voltage`, `dc_current`, `temperature`, `energy`
+
+`inverter_three_phase`: same, minus `ac_voltage`, plus `ac_current_phase_a/b/c` and `ac_voltage_phase_a/b/c` (phase-to-neutral). `ac_current` is the total.
+
+### `on_power_limit` trigger
+
+Fires whenever a client writes `WMaxLimPct` or `WMaxLim_Ena`. Arguments:
+
+- `level` (`float`) — commanded limit in percent of nameplate power (0.00–100.00)
+- `enabled` (`bool`) — whether the limit is active
+
+The latest values are also available in lambdas via `id(my_server).get_power_limit_pct()` and `id(my_server).get_power_limit_enabled()`.
+
+### Diagnostics
+
+`id(my_server).get_client_count()` returns the number of connected clients — handy in a template sensor:
 
 ```yaml
-number:
-  - platform: modbus_controller
-    modbus_controller_id: modbus_master
-    id: power_limit
-    name: Limit output power
-    register_type: holding
-    address: 3051           # = 3052 - 1 (Solis)
-    value_type: S_WORD
-    unit_of_measurement: '%'
-    entity_category: config
-    icon: mdi:percent
-    skip_updates: 10
-    mode: box
-    min_value: 0
-    max_value: 110
-    multiply: 100
+sensor:
+  - platform: template
+    name: "SunSpec Clients"
+    lambda: "return id(my_server).get_client_count();"
+    update_interval: 60s
 ```
 
-### Options
+## Register map
 
-| Key | Required | Description |
-|-----|----------|-------------|
-| `manufacturer` | yes | Manufacturer string (max 16 chars) |
-| `model` | yes | Model string (max 16 chars) |
-| `serial_number` | yes | Serial number string (max 16 chars) |
-| `version` | yes | Firmware version string (max 8 chars) |
-| `rated_power` | yes | Inverter rated power in watts (int, max 32767) |
-| `ac_power` | yes | ESPHome sensor ID for AC power (W) |
-| `ac_voltage` | yes | ESPHome sensor ID for AC voltage (V) |
-| `ac_frequency` | yes | ESPHome sensor ID for AC frequency (Hz) |
-| `temperature` | yes | ESPHome sensor ID for inverter temperature (°C) |
-| `ac_current` | no | ESPHome sensor ID for AC current (A) |
-| `energy_total` | no | ESPHome sensor ID for lifetime energy (Wh) |
-| `power_limit_number_id` | no | ESPHome `number` entity ID to route power limit through (recommended) |
-| `modbus_controller_id` | no | ID of your `modbus_controller` component (required when using `power_limit_register`) |
-| `power_limit_register` | no | RS485 register address for direct power limit write (legacy) |
+Offsets relative to `base_address` (default 40000):
 
-## SunSpec Register Map
+| Offset | Content |
+| --- | --- |
+| 0–1 | `SunS` well-known identifier |
+| 2–3 | Model 1 header (ID=1, L=66) |
+| 4–69 | Model 1 data: Mn(16) Md(16) Opt(8) Vr(8) SN(16) DA(1) Pad(1) |
+| 70–71 | Model 101/103 header (ID=101 or 103, L=50) |
+| 72–121 | Inverter data (A, AphA–C, A_SF, PPV/PhV block, V_SF, W, W_SF, Hz, Hz_SF, VA, VAr, PF, WH, DC block, temperatures, St, StVnd, events) |
+| 122–123 | Model 123 header (ID=123, L=24) — only with `controls:` |
+| 124–147 | Model 123 data (Conn, WMaxLimPct, WMaxLim_Ena, …; scale factors read-only) |
+| 122–123 or 148–149 | Terminator (0xFFFF, 0) |
 
-| Range | Model | Content |
-|-------|-------|---------|
-| 40000–40069 | 1 | Common block (manufacturer, model, serial, version) |
-| 40070–40121 | 101 | Single-phase inverter (power, voltage, current, frequency, temperature, energy, state) |
-| 40122–40149 | 120 | Nameplate (DER type, rated power) |
-| 40150–40175 | 123 | Controls (WMaxLimPct @ 40155, WMaxLim_Ena @ 40159) |
-| 40176–40179 | — | End marker |
+Function codes 0x03/0x04 (read) are supported everywhere; 0x06/0x10 (write) only within Model 123 data offsets 0–20 when `controls:` is enabled. Everything else gets a proper Modbus exception.
 
-## Power Limiting
+## Scaling
 
-Write `WMaxLimPct` (register 40155, range 0–100) and `WMaxLim_Ena` (register 40159, `1` = enabled):
+| Point | Scale factor | Resolution |
+| --- | --- | --- |
+| Currents | −2 | 0.01 A |
+| Voltages | −1 | 0.1 V |
+| Power | 0 | 1 W (max ±32.767 kW; clamped with a warning) |
+| Frequency | −2 | 0.01 Hz |
+| Temperature | 0 | 1 °C |
+| Energy | 0 | 1 Wh (acc32) |
 
-**Via number entity (`power_limit_number_id`, recommended):**
-- When `WMaxLim_Ena = 1`: sets the number entity to `WMaxLimPct` (0–100)
-- When `WMaxLim_Ena = 0`: sets the number entity to `110` (maps to "unlimited" / full power)
-- The number entity's own `multiply` and write logic handles the actual Modbus write
+## Testing
 
-**Via direct register write (`power_limit_register`, legacy):**
-- When `WMaxLim_Ena = 1`: queues a write of `WMaxLimPct` to `power_limit_register` on the inverter
-- When `WMaxLim_Ena = 0`: queues a write of `100` (full power restore)
-- Writes are asynchronous — executed on the Modbus controller's next poll cycle
-
-On ESP32 reboot, `WMaxLim_Ena` defaults to `0` and `WMaxLimPct` defaults to `100`. The inverter's own power limit state is not read back on startup — re-apply any desired limit after reboot.
-
-## Scope / Limitations
-
-- Single-phase only (Model 101)
-- One inverter instance per ESP32
-- No persistent energy counter across reboots
-- No WMaxLimPct auto-revert timer (field present but always 0)
-- No three-phase support (Model 103)
+`tests/test-esp32.yaml` compiles both a single-phase server with controls and a three-phase server; CI validates and compiles it on every push. For an end-to-end check, point [pysunspec2](https://github.com/sunspec/pysunspec2) or Home Assistant's SunSpec integration at port 502.
