@@ -1,5 +1,6 @@
 #include "sunspec.h"
 
+#include <cinttypes>
 #include <cstring>
 #include <cmath>
 #include <fcntl.h>
@@ -239,7 +240,7 @@ void SunspecComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "  Port:            %u", this->port_);
   ESP_LOGCONFIG(TAG, "  Max Connections: %u", this->max_connections_);
   ESP_LOGCONFIG(TAG, "  Unit Address:    %u", this->unit_address_);
-  ESP_LOGCONFIG(TAG, "  Stale Timeout:   %u ms", this->stale_timeout_ms_);
+  ESP_LOGCONFIG(TAG, "  Stale Timeout:   %" PRIu32 " ms", this->stale_timeout_ms_);
   if (this->is_failed()) {
     ESP_LOGE(TAG, "  Setup failed!");
   }
@@ -402,7 +403,7 @@ void SunspecComponent::check_stale_slots_() {
 
     this->slot_fresh_[slot] = false;
     this->update_slot_(slot);  // fresh_state_() now returns NaN -> "not implemented"
-    ESP_LOGW(TAG, "Sensor '%s' has not updated for %u ms; reporting as not implemented",
+    ESP_LOGW(TAG, "Sensor '%s' has not updated for %" PRIu32 " ms; reporting as not implemented",
              this->sensors_[slot]->get_name().c_str(), this->stale_timeout_ms_);
   }
 }
