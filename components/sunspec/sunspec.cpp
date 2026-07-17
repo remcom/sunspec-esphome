@@ -3,11 +3,14 @@
 #include <cstring>
 #include <cmath>
 #include <fcntl.h>
+#include <unistd.h>
 #include <errno.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 
+#include "esphome/core/hal.h"
 #include "esphome/core/log.h"
 #include "esphome/core/application.h"
 
@@ -17,12 +20,31 @@ static const char *const TAG = "sunspec";
 
 // ---------- helpers ----------
 
-int16_t SunspecComponent::to_sf(float val, int sf) {
-  if (std::isnan(val)) return (int16_t) 0x8000;
+uint16_t SunspecComponent::to_sf(float val, int sf) {
+  if (std::isnan(val)) return NI_INT16;
   float scaled = val * std::pow(10.0f, (float)(-sf));
-  if (scaled > 32767.0f)  return 32767;
-  if (scaled < -32768.0f) return -32768;
-  return (int16_t)(scaled + (scaled >= 0 ? 0.5f : -0.5f));
+  if (scaled > 32767.0f)  return (uint16_t) 32767;
+  if (scaled < -32768.0f) return (uint16_t)(int16_t) -32768;
+  return (uint16_t)(int16_t)(scaled + (scaled >= 0 ? 0.5f : -0.5f));
+}
+
+uint16_t SunspecComponent::to_u16_sf(float val, int sf) {
+  if (std::isnan(val)) return NI_UINT16;
+  float scaled = val * std::pow(10.0f, (float)(-sf));
+  // Cap below the 0xFFFF "not implemented" sentinel
+  if (scaled < 0.0f)     return 0;
+  if (scaled > 65534.0f) return 65534;
+  return (uint16_t)(scaled + 0.5f);
+}
+
+float SunspecComponent::fresh_state_(uint8_t slot) {
+  sensor::Sensor *s = this->sensors_[slot];
+  if (s == nullptr || !s->has_state()) return NAN;
+  if (this->stale_timeout_ms_ > 0 &&
+      millis() - this->sensor_last_update_[slot] > this->stale_timeout_ms_) {
+    return NAN;
+  }
+  return s->get_state();
 }
 
 void SunspecComponent::encode_string_(uint16_t *dest, const std::string &s, uint8_t reg_count) {
@@ -40,8 +62,8 @@ void SunspecComponent::encode_string_(uint16_t *dest, const std::string &s, uint
 // ---------- static register map ----------
 
 void SunspecComponent::init_static_registers_() {
-  // Initialise entire bank to 0xFFFF (SunSpec "not implemented")
-  for (uint16_t i = 0; i < REG_COUNT; i++) this->registers_[i] = 0xFFFF;
+  // Initialise entire bank to 0xFFFF (SunSpec uint16 "not implemented")
+  for (uint16_t i = 0; i < REG_COUNT; i++) this->registers_[i] = NI_UINT16;
 
   // --- Common Block (Model 1) ---
   this->set_reg(40000, 0x5375);  // SunS marker high
@@ -55,76 +77,101 @@ void SunspecComponent::init_static_registers_() {
   this->encode_string_(&this->registers_[44], this->version_,        8);  // 40044-40051
   this->encode_string_(&this->registers_[52], this->serial_number_, 16);  // 40052-40067
 
-  this->set_reg(40068, 1);       // Modbus address
-  this->set_reg(40069, 0xFFFF);  // Padding
+  this->set_reg(40068, this->unit_address_);  // DA (Modbus device address)
+  this->set_reg(40069, 0);                    // Padding
 
   // --- Inverter Block (Model 101) ---
   this->set_reg(40070, 101);  // Model ID
   this->set_reg(40071, 50);   // Length
-  // 40072-40075: current -- updated in refresh_sensors_()
-  this->set_reg(40076, (uint16_t)(int16_t)(-2));  // Current SF = -2
-  // 40077-40079: phase voltage AB/BC/CA -- stay 0xFFFF
-  // 40080: Volts AN -- updated in refresh_sensors_()
-  // 40081-40082: BN/CN -- stay 0xFFFF
-  this->set_reg(40083, (uint16_t)(int16_t)(-1));  // Voltage SF = -1
-  // 40084: AC power -- updated in refresh_sensors_()
-  this->set_reg(40085, 0);  // Power SF = 0
-  // 40086: Frequency -- updated in refresh_sensors_()
-  this->set_reg(40087, (uint16_t)(int16_t)(-2));  // Frequency SF = -2
-  // 40088-40093: VA/VAR/PF -- stay 0xFFFF
-  // 40094-40095: energy -- updated in refresh_sensors_()
-  this->set_reg(40096, 0);  // Energy SF = 0
-  // 40097-40102: DC measurements -- stay 0xFFFF
-  // 40103: temperature -- updated in refresh_sensors_()
-  // 40104-40106: reserved -- stay 0xFFFF
-  this->set_reg(40107, (uint16_t)(int16_t)(-1));  // Temp SF = -1
-  this->set_reg(40108, 1);   // State = Off (updated in refresh_sensors_())
-  // 40109: reserved -- stays 0xFFFF
-  // 40110-40113: Events = 0 (no events)
-  this->set_reg(40110, 0); this->set_reg(40111, 0);
-  this->set_reg(40112, 0); this->set_reg(40113, 0);
-  // 40114-40121: padding -- stays 0xFFFF
+  // 40072-40075: A/AphA/AphB/AphC -- 40072/40073 updated in refresh_sensors_()
+  this->set_reg(40076, (uint16_t)(int16_t)(-2));  // A_SF = -2 (current may be derived from P/V)
+  // 40077-40079: phase voltage AB/BC/CA -- stay NI
+  // 40080: PhVphA -- updated in refresh_sensors_()
+  // 40081-40082: BN/CN -- stay NI
+  this->set_reg(40083, (uint16_t)(int16_t)(-1));  // V_SF = -1
+  this->set_reg(40084, NI_INT16);                 // W -- updated in refresh_sensors_()
+  this->set_reg(40085, 0);                        // W_SF = 0
+  // 40086: Hz -- updated in refresh_sensors_()
+  this->set_reg(40087, (uint16_t)(int16_t)(-2));  // Hz_SF = -2
+  // 40088-40093: VA/VAr/PF and their SFs -- int16 "not implemented"
+  for (uint16_t addr = 40088; addr <= 40093; addr++) this->set_reg(addr, NI_INT16);
+  this->set_reg(40094, 0);  // WH high -- updated in refresh_sensors_()
+  this->set_reg(40095, 0);  // WH low
+  this->set_reg(40096, 0);  // WH_SF = 0
+  this->set_reg(40097, NI_UINT16);  // DCA -- updated in refresh_sensors_() if configured
+  this->set_reg(40098, this->sensors_[SLOT_DC_CURRENT] ? (uint16_t)(int16_t)(-2) : NI_INT16);  // DCA_SF
+  this->set_reg(40099, NI_UINT16);  // DCV
+  this->set_reg(40100, this->sensors_[SLOT_DC_VOLTAGE] ? (uint16_t)(int16_t)(-1) : NI_INT16);  // DCV_SF
+  this->set_reg(40101, NI_INT16);   // DCW
+  this->set_reg(40102, this->sensors_[SLOT_DC_POWER] ? (uint16_t) 0 : NI_INT16);  // DCW_SF
+  this->set_reg(40103, NI_INT16);  // TmpCab -- updated in refresh_sensors_()
+  this->set_reg(40104, NI_INT16);  // TmpSnk
+  this->set_reg(40105, NI_INT16);  // TmpTrns
+  this->set_reg(40106, NI_INT16);  // TmpOt
+  this->set_reg(40107, (uint16_t)(int16_t)(-1));  // Tmp_SF = -1
+  this->set_reg(40108, ST_OFF);    // St (updated in refresh_sensors_())
+  // 40109: StVnd -- stays NI
+  // 40110-40121: Evt1/Evt2/EvtVnd1-4 = 0 (no events)
+  for (uint16_t addr = 40110; addr <= 40121; addr++) this->set_reg(addr, 0);
 
   // --- Nameplate Block (Model 120) ---
   this->set_reg(40122, 120);  // Model ID
   this->set_reg(40123, 26);   // Length
   this->set_reg(40124, 4);    // DER type = PV
-  this->set_reg(40125, this->rated_power_);  // WRtg (watts, SF=0)
-  this->set_reg(40126, 0);    // Power SF = 0
-  // 40127-40149: stay 0xFFFF
+  this->set_reg(40125, this->rated_power_);  // WRtg (watts)
+  this->set_reg(40126, 0);    // WRtg_SF = 0
+  // 40127-40149: stay NI
 
-  // --- Controls Block (Model 123) ---
-  this->set_reg(40150, 123);  // Model ID
-  this->set_reg(40151, 24);   // Length
-  // 40152-40154: reserved -- stay 0xFFFF
-  this->set_reg(40155, 100);  // WMaxLimPct default = 100 (no limit)
-  // 40156: reserved -- stays 0xFFFF
-  this->set_reg(40157, 0);    // WMaxLimPct_RvrtTms = 0 (no auto-revert)
-  // 40158: reserved -- stays 0xFFFF
-  this->set_reg(40159, 0);    // WMaxLim_Ena = 0 (disabled)
-  // 40160-40172: reserved -- stay 0xFFFF
-  this->set_reg(40173, 0);    // WMaxLimPct_SF = 0
-  // 40174-40175: reserved -- stay 0xFFFF
+  // --- Immediate Controls Block (Model 123) ---
+  this->set_reg(40150, 123);        // Model ID
+  this->set_reg(40151, 24);         // Length
+  // 40152-40153: Conn_WinTms / Conn_RvrtTms -- stay NI
+  this->set_reg(40154, 1);          // Conn = connected
+  this->set_reg(40155, 10000);      // WMaxLimPct default = 100.00 % (SF=-2)
+  // 40156-40158: WMaxLimPct WinTms/RvrtTms/RmpTms -- stay NI
+  this->set_reg(40159, 0);          // WMaxLim_Ena = 0 (disabled)
+  this->set_reg(40160, NI_INT16);   // OutPFSet
+  // 40161-40163: OutPFSet WinTms/RvrtTms/RmpTms -- stay NI
+  this->set_reg(40164, 0);          // OutPFSet_Ena = 0 (disabled)
+  this->set_reg(40165, NI_INT16);   // VArWMaxPct
+  this->set_reg(40166, NI_INT16);   // VArMaxPct
+  this->set_reg(40167, NI_INT16);   // VArAvalPct
+  // 40168-40170: VArPct WinTms/RvrtTms/RmpTms -- stay NI
+  // 40171: VArPct_Mod -- stays NI
+  this->set_reg(40172, 0);          // VArPct_Ena = 0 (disabled)
+  this->set_reg(40173, (uint16_t)(int16_t)(-2));  // WMaxLimPct_SF = -2 (0.01 %)
+  this->set_reg(40174, NI_INT16);   // OutPFSet_SF
+  this->set_reg(40175, NI_INT16);   // VArPct_SF
 
-  // --- End Marker ---
-  this->set_reg(40176, 0xFFFF); this->set_reg(40177, 0xFFFF);
-  this->set_reg(40178, 0xFFFF); this->set_reg(40179, 0xFFFF);
+  // --- End Model (ID 0xFFFF, length 0) ---
+  this->set_reg(40176, 0xFFFF);
+  this->set_reg(40177, 0);
 }
 
 // ---------- lifecycle ----------
 
 void SunspecComponent::setup() {
   // 1. Validate required sensor pointers
-  if (!this->ac_power_ || !this->ac_voltage_ || !this->ac_frequency_ || !this->temperature_) {
+  if (!this->sensors_[SLOT_AC_POWER] || !this->sensors_[SLOT_AC_VOLTAGE] ||
+      !this->sensors_[SLOT_AC_FREQUENCY] || !this->sensors_[SLOT_TEMPERATURE]) {
     ESP_LOGE(TAG, "One or more required sensors are not configured");
     this->mark_failed();
     return;
   }
 
-  // 2. Initialise register bank
+  // 2. Track per-sensor update times so stale values can be reported as
+  //    "not implemented" instead of serving frozen data forever
+  for (uint8_t slot = 0; slot < SLOT_COUNT; slot++) {
+    sensor::Sensor *s = this->sensors_[slot];
+    if (s == nullptr) continue;
+    this->sensor_last_update_[slot] = millis();
+    s->add_on_state_callback([this, slot](float) { this->sensor_last_update_[slot] = millis(); });
+  }
+
+  // 3. Initialise register bank
   this->init_static_registers_();
 
-  // 3. Open non-blocking TCP socket on port 502
+  // 4. Open non-blocking TCP socket
   this->server_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
   if (this->server_fd_ < 0) {
     ESP_LOGE(TAG, "socket() failed: %d", errno);
@@ -138,17 +185,17 @@ void SunspecComponent::setup() {
   struct sockaddr_in addr{};
   addr.sin_family      = AF_INET;
   addr.sin_addr.s_addr = INADDR_ANY;
-  addr.sin_port        = htons(502);
+  addr.sin_port        = htons(this->port_);
 
   if (::bind(this->server_fd_, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-    ESP_LOGE(TAG, "bind() failed on port 502: %d", errno);
+    ESP_LOGE(TAG, "bind() failed on port %u: %d", this->port_, errno);
     ::close(this->server_fd_);
     this->server_fd_ = -1;
     this->mark_failed();
     return;
   }
 
-  if (::listen(this->server_fd_, 2) < 0) {
+  if (::listen(this->server_fd_, this->max_connections_) < 0) {
     ESP_LOGE(TAG, "listen() failed: %d", errno);
     ::close(this->server_fd_);
     this->server_fd_ = -1;
@@ -166,17 +213,20 @@ void SunspecComponent::setup() {
     return;
   }
 
-  ESP_LOGI(TAG, "SunSpec Modbus TCP server listening on port 502");
+  ESP_LOGI(TAG, "SunSpec Modbus TCP server listening on port %u", this->port_);
 }
 
 void SunspecComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "SunSpec Modbus TCP:");
-  ESP_LOGCONFIG(TAG, "  Manufacturer: %s", this->manufacturer_.c_str());
-  ESP_LOGCONFIG(TAG, "  Model:        %s", this->model_.c_str());
-  ESP_LOGCONFIG(TAG, "  Serial:       %s", this->serial_number_.c_str());
-  ESP_LOGCONFIG(TAG, "  Version:      %s", this->version_.c_str());
-  ESP_LOGCONFIG(TAG, "  Rated Power:  %u W", this->rated_power_);
-  ESP_LOGCONFIG(TAG, "  Port:         502");
+  ESP_LOGCONFIG(TAG, "  Manufacturer:    %s", this->manufacturer_.c_str());
+  ESP_LOGCONFIG(TAG, "  Model:           %s", this->model_.c_str());
+  ESP_LOGCONFIG(TAG, "  Serial:          %s", this->serial_number_.c_str());
+  ESP_LOGCONFIG(TAG, "  Version:         %s", this->version_.c_str());
+  ESP_LOGCONFIG(TAG, "  Rated Power:     %u W", this->rated_power_);
+  ESP_LOGCONFIG(TAG, "  Port:            %u", this->port_);
+  ESP_LOGCONFIG(TAG, "  Max Connections: %u", this->max_connections_);
+  ESP_LOGCONFIG(TAG, "  Unit Address:    %u", this->unit_address_);
+  ESP_LOGCONFIG(TAG, "  Stale Timeout:   %u ms", this->stale_timeout_ms_);
   if (this->is_failed()) {
     ESP_LOGE(TAG, "  Setup failed!");
   }
@@ -199,8 +249,9 @@ void SunspecComponent::accept_clients_() {
   int fd = ::accept(this->server_fd_, (struct sockaddr *)&client_addr, &addr_len);
   if (fd < 0) return;  // EAGAIN / EWOULDBLOCK -- no pending connection
 
-  // Find a free slot
-  for (auto &c : this->clients_) {
+  // Find a free slot within the configured connection limit
+  for (uint8_t i = 0; i < this->max_connections_ && i < MAX_CLIENTS; i++) {
+    Client &c = this->clients_[i];
     if (c.fd < 0) {
       int flags = ::fcntl(fd, F_GETFL, 0);
       if (flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
@@ -208,10 +259,14 @@ void SunspecComponent::accept_clients_() {
         ::close(fd);
         return;
       }
+      // Small responses to poll requests should not wait for Nagle
+      int opt = 1;
+      ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+      ::setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &opt, sizeof(opt));
       c.fd           = fd;
       c.buf_len      = 0;
       c.last_recv_ms = millis();
-      ESP_LOGD(TAG, "Client connected (fd=%d)", fd);
+      ESP_LOGD(TAG, "Client connected (fd=%d) from %s", fd, inet_ntoa(client_addr.sin_addr));
       return;
     }
   }
@@ -233,61 +288,64 @@ void SunspecComponent::close_client_(Client &c) {
 // ---------- sensor refresh ----------
 
 void SunspecComponent::refresh_sensors_() {
-  // AC current (SF=-2): value x 100, same on total and phase A.
+  float pwr  = this->fresh_state_(SLOT_AC_POWER);
+  float volt = this->fresh_state_(SLOT_AC_VOLTAGE);
+
+  // AC current (SF=-2): same on total and phase A.
   // If no current sensor, derive from power / voltage (assuming unity power factor).
-  if (this->ac_current_) {
-    int16_t curr = to_sf(this->ac_current_->get_state(), -2);
-    this->set_reg(40072, (uint16_t) curr);  // AC total current
-    this->set_reg(40073, (uint16_t) curr);  // Phase A current
-  } else {
-    float pwr  = this->ac_power_->get_state();
-    float volt = this->ac_voltage_->get_state();
-    if (!std::isnan(pwr) && !std::isnan(volt) && volt > 1.0f) {
-      int16_t curr = to_sf(pwr / volt, -2);
-      this->set_reg(40072, (uint16_t) curr);
-      this->set_reg(40073, (uint16_t) curr);
-    } else {
-      this->set_reg(40072, 0x8000);
-      this->set_reg(40073, 0x8000);
-    }
+  float curr = this->fresh_state_(SLOT_AC_CURRENT);
+  if (this->sensors_[SLOT_AC_CURRENT] == nullptr &&
+      !std::isnan(pwr) && !std::isnan(volt) && volt > 1.0f) {
+    curr = pwr / volt;
   }
+  uint16_t curr_raw = to_u16_sf(curr, -2);
+  this->set_reg(40072, curr_raw);  // A  (total)
+  this->set_reg(40073, curr_raw);  // AphA
 
   // AC voltage (SF=-1): value x 10
-  this->set_reg(40080, (uint16_t) to_sf(this->ac_voltage_->get_state(), -1));
+  this->set_reg(40080, to_u16_sf(volt, -1));
 
   // AC power (SF=0): direct watts
-  this->set_reg(40084, (uint16_t) to_sf(this->ac_power_->get_state(), 0));
+  this->set_reg(40084, to_sf(pwr, 0));
 
   // AC frequency (SF=-2): value x 100
-  this->set_reg(40086, (uint16_t) to_sf(this->ac_frequency_->get_state(), -2));
+  this->set_reg(40086, to_u16_sf(this->fresh_state_(SLOT_AC_FREQUENCY), -2));
 
-  // Energy (uint32, SF=0)
-  if (this->energy_total_) {
-    float e = this->energy_total_->get_state();
+  // Energy (acc32, SF=0, sensor reports kWh). Accumulators keep their last
+  // known total when the sensor goes stale, so bypass the staleness check.
+  sensor::Sensor *energy = this->sensors_[SLOT_ENERGY];
+  if (energy != nullptr && energy->has_state()) {
+    float e = energy->get_state();
     if (!std::isnan(e) && e >= 0) {
       uint32_t wh = (uint32_t)(e * 1000.0f);
       this->set_reg(40094, (uint16_t)(wh >> 16));
       this->set_reg(40095, (uint16_t)(wh & 0xFFFF));
-    } else {
-      this->set_reg(40094, 0);
-      this->set_reg(40095, 0);
     }
   }
 
-  // Temperature (SF=-1): value x 10
-  this->set_reg(40103, (uint16_t) to_sf(this->temperature_->get_state(), -1));
+  // DC measurements (only touched when configured; SFs are NI otherwise)
+  if (this->sensors_[SLOT_DC_CURRENT])
+    this->set_reg(40097, to_u16_sf(this->fresh_state_(SLOT_DC_CURRENT), -2));
+  if (this->sensors_[SLOT_DC_VOLTAGE])
+    this->set_reg(40099, to_u16_sf(this->fresh_state_(SLOT_DC_VOLTAGE), -1));
+  if (this->sensors_[SLOT_DC_POWER])
+    this->set_reg(40101, to_sf(this->fresh_state_(SLOT_DC_POWER), 0));
 
-  // Inverter state: MPPT (4) if producing, else Off (1)
-  float pwr = this->ac_power_->get_state();
-  this->set_reg(40108, (!std::isnan(pwr) && pwr > 5.0f) ? 4 : 1);
+  // Temperature (SF=-1): value x 10
+  this->set_reg(40103, to_sf(this->fresh_state_(SLOT_TEMPERATURE), -1));
+
+  // Inverter state: no fresh power data -> Off; producing -> MPPT; else Sleeping
+  uint16_t st = ST_OFF;
+  if (!std::isnan(pwr)) st = (pwr > 5.0f) ? ST_MPPT : ST_SLEEPING;
+  this->set_reg(40108, st);
 }
 
 // ---------- TCP framing ----------
 
 void SunspecComponent::process_client_(Client &c) {
-  // Timeout check
-  if (millis() - c.last_recv_ms > CLIENT_TIMEOUT_MS) {
-    ESP_LOGD(TAG, "Client timeout (fd=%d)", c.fd);
+  // Idle timeout check
+  if (millis() - c.last_recv_ms > IDLE_TIMEOUT_MS) {
+    ESP_LOGD(TAG, "Client idle timeout (fd=%d)", c.fd);
     this->close_client_(c);
     return;
   }
@@ -331,6 +389,7 @@ void SunspecComponent::process_client_(Client &c) {
     if (c.buf_len < frame_len) break;  // incomplete frame, wait for more data
 
     this->handle_frame_(c, frame_len);
+    if (c.fd < 0) return;  // handler closed the connection
 
     // Consume processed frame from buffer
     c.buf_len -= frame_len;
@@ -343,20 +402,28 @@ void SunspecComponent::handle_frame_(Client &c, uint16_t frame_len) {
   uint8_t  uid  = c.buf[6];
   uint8_t  fc   = c.buf[7];
 
-  if (fc == 0x03) {
-    // FC03: Read Holding Registers
-    if (frame_len < 12) { this->send_exception_(c.fd, txid, uid, fc, 0x03); return; }
+  // Respond to the configured unit address and 0xFF (the recommended default
+  // for TCP devices without a unit hierarchy, per the Modbus TCP guide)
+  if (uid != this->unit_address_ && uid != 0xFF) {
+    ESP_LOGD(TAG, "Ignoring request for unit %u (fd=%d)", uid, c.fd);
+    this->send_exception_(c, txid, uid, fc, 0x0B);  // Gateway Target Failed To Respond
+    return;
+  }
+
+  if (fc == 0x03 || fc == 0x04) {
+    // FC03/FC04: Read Holding / Input Registers (same register bank)
+    if (frame_len < 12) { this->send_exception_(c, txid, uid, fc, 0x03); return; }
     uint16_t start = (c.buf[8]  << 8) | c.buf[9];
     uint16_t count = (c.buf[10] << 8) | c.buf[11];
 
-    if (count > 120) { this->send_exception_(c.fd, txid, uid, fc, 0x03); return; }
+    if (count == 0 || count > 125) { this->send_exception_(c, txid, uid, fc, 0x03); return; }
     if (start < BASE_ADDR || (start + count) > (BASE_ADDR + REG_COUNT)) {
-      this->send_exception_(c.fd, txid, uid, fc, 0x02);
+      this->send_exception_(c, txid, uid, fc, 0x02);
       return;
     }
 
-    // Max count is 120 registers → 2 + 240 = 242 bytes
-    uint8_t pdu[242];
+    // Max count is 125 registers → 2 + 250 = 252 bytes
+    uint8_t pdu[252];
     pdu[0] = fc;
     pdu[1] = count * 2;
     uint16_t idx = start - BASE_ADDR;
@@ -364,61 +431,62 @@ void SunspecComponent::handle_frame_(Client &c, uint16_t frame_len) {
       pdu[2 + i * 2]     = this->registers_[idx + i] >> 8;
       pdu[2 + i * 2 + 1] = this->registers_[idx + i] & 0xFF;
     }
-    this->send_response_(c.fd, txid, uid, pdu, 2 + count * 2);
+    this->send_response_(c, txid, uid, pdu, 2 + count * 2);
 
   } else if (fc == 0x06) {
     // FC06: Write Single Register
-    if (frame_len < 12) { this->send_exception_(c.fd, txid, uid, fc, 0x03); return; }
+    if (frame_len < 12) { this->send_exception_(c, txid, uid, fc, 0x03); return; }
     uint16_t addr = (c.buf[8]  << 8) | c.buf[9];
     uint16_t val  = (c.buf[10] << 8) | c.buf[11];
 
-    if (addr != REG_WMAXLIMPCT && addr != REG_WMAXLIM_ENA) {
-      this->send_exception_(c.fd, txid, uid, fc, 0x02);
+    if (addr < WRITABLE_FIRST || addr > WRITABLE_LAST) {
+      this->send_exception_(c, txid, uid, fc, 0x02);
       return;
     }
     this->set_reg(addr, val);
-    this->apply_power_limit_();
+    if (addr == REG_WMAXLIMPCT || addr == REG_WMAXLIM_ENA) this->apply_power_limit_();
 
     // Echo back per Modbus spec
     uint8_t pdu[5] = { fc, c.buf[8], c.buf[9], c.buf[10], c.buf[11] };
-    this->send_response_(c.fd, txid, uid, pdu, sizeof(pdu));
+    this->send_response_(c, txid, uid, pdu, sizeof(pdu));
 
   } else if (fc == 0x10) {
     // FC16: Write Multiple Registers
-    if (frame_len < 13) { this->send_exception_(c.fd, txid, uid, fc, 0x03); return; }
-    uint16_t start = (c.buf[8]  << 8) | c.buf[9];
-    uint16_t count = (c.buf[10] << 8) | c.buf[11];
+    if (frame_len < 13) { this->send_exception_(c, txid, uid, fc, 0x03); return; }
+    uint16_t start      = (c.buf[8]  << 8) | c.buf[9];
+    uint16_t count      = (c.buf[10] << 8) | c.buf[11];
+    uint8_t  byte_count = c.buf[12];
 
-    if (count > 120 || frame_len < (uint16_t)(13 + count * 2)) {
-      this->send_exception_(c.fd, txid, uid, fc, 0x03);
+    if (count == 0 || count > 123 || byte_count != count * 2 ||
+        frame_len < (uint16_t)(13 + byte_count)) {
+      this->send_exception_(c, txid, uid, fc, 0x03);
+      return;
+    }
+    if (start < WRITABLE_FIRST || (start + count - 1) > WRITABLE_LAST) {
+      this->send_exception_(c, txid, uid, fc, 0x02);
       return;
     }
 
-    // Apply only writable registers; silently ignore others
-    bool changed = false;
+    bool limit_changed = false;
     for (uint16_t i = 0; i < count; i++) {
       uint16_t addr = start + i;
-      uint16_t val  = (c.buf[13 + i * 2] << 8) | c.buf[14 + i * 2];
-      if (addr == REG_WMAXLIMPCT || addr == REG_WMAXLIM_ENA) {
-        this->set_reg(addr, val);
-        changed = true;
-      }
+      this->set_reg(addr, (c.buf[13 + i * 2] << 8) | c.buf[14 + i * 2]);
+      if (addr == REG_WMAXLIMPCT || addr == REG_WMAXLIM_ENA) limit_changed = true;
     }
-    if (changed) this->apply_power_limit_();
+    if (limit_changed) this->apply_power_limit_();
 
-    // Always respond with success — non-writable addresses are silently ignored per spec.
     uint8_t pdu[5] = { fc, c.buf[8], c.buf[9], c.buf[10], c.buf[11] };
-    this->send_response_(c.fd, txid, uid, pdu, sizeof(pdu));
+    this->send_response_(c, txid, uid, pdu, sizeof(pdu));
 
   } else {
-    this->send_exception_(c.fd, txid, uid, fc, 0x01);  // Illegal Function
+    this->send_exception_(c, txid, uid, fc, 0x01);  // Illegal Function
   }
 }
 
-void SunspecComponent::send_response_(int fd, uint16_t txid, uint8_t uid,
-                                       const uint8_t *pdu, uint8_t pdu_len) {
-  // Max frame: 7-byte MBAP header + up to 242-byte PDU = 249 bytes
-  uint8_t frame[249];
+void SunspecComponent::send_response_(Client &c, uint16_t txid, uint8_t uid,
+                                      const uint8_t *pdu, uint16_t pdu_len) {
+  // Max frame: 7-byte MBAP header + up to 252-byte PDU = 259 bytes
+  uint8_t frame[259];
   frame[0] = txid >> 8;   frame[1] = txid & 0xFF;
   frame[2] = 0x00;        frame[3] = 0x00;  // Protocol ID
   frame[4] = (1 + pdu_len) >> 8;
@@ -426,49 +494,64 @@ void SunspecComponent::send_response_(int fd, uint16_t txid, uint8_t uid,
   frame[6] = uid;
   memcpy(frame + 7, pdu, pdu_len);
   uint16_t frame_len = 7 + pdu_len;
-  if (::send(fd, frame, frame_len, 0) < 0) {
-    ESP_LOGW(TAG, "send() failed (fd=%d): %d", fd, errno);
+
+  // Handle partial writes on the non-blocking socket
+  uint16_t offset  = 0;
+  uint8_t  retries = 0;
+  while (offset < frame_len) {
+    int sent = ::send(c.fd, frame + offset, frame_len - offset, 0);
+    if (sent > 0) {
+      offset += sent;
+      continue;
+    }
+    if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+      if (++retries > 50) {
+        ESP_LOGW(TAG, "send() timed out (fd=%d)", c.fd);
+        this->close_client_(c);
+        return;
+      }
+      delay(1);
+      continue;
+    }
+    ESP_LOGW(TAG, "send() failed (fd=%d): %d", c.fd, errno);
+    this->close_client_(c);
+    return;
   }
 }
 
-void SunspecComponent::send_exception_(int fd, uint16_t txid, uint8_t uid,
-                                        uint8_t fc, uint8_t code) {
+void SunspecComponent::send_exception_(Client &c, uint16_t txid, uint8_t uid,
+                                       uint8_t fc, uint8_t code) {
   uint8_t pdu[2] = { (uint8_t)(fc | 0x80), code };
-  this->send_response_(fd, txid, uid, pdu, 2);
+  this->send_response_(c, txid, uid, pdu, 2);
 }
 
 void SunspecComponent::apply_power_limit_() {
-  uint16_t ena = this->get_reg(REG_WMAXLIM_ENA);
-  uint16_t pct = this->get_reg(REG_WMAXLIMPCT);
+  bool  enabled = this->get_power_limit_enabled();
+  float pct     = this->get_power_limit_pct();
+  if (pct > 100.0f) pct = 100.0f;
 
-  if (this->power_limit_number_) {
+  ESP_LOGI(TAG, "Power limit command: %.2f%% (%s)", pct, enabled ? "enabled" : "disabled");
+  this->power_limit_callback_.call(pct, enabled);
+
+  if (this->power_limit_number_ != nullptr) {
     // Route through the number entity: 0–100 = limit %, 110 = unlimited
-    float set_val = (ena == 1) ? (float) pct : 110.0f;
     auto call = this->power_limit_number_->make_call();
-    call.set_value(set_val);
+    call.set_value(enabled ? pct : 110.0f);
     call.perform();
-    if (ena == 1) {
-      ESP_LOGI(TAG, "Power limit set to %u%% via number entity", pct);
-    } else {
-      ESP_LOGI(TAG, "Power limit disabled (110 = unlimited) via number entity");
-    }
     return;
   }
 
-  // Fallback: write directly to Modbus register
-  uint16_t write_val = (ena == 1) ? pct : 100;
-  if (!this->controller_) {
-    ESP_LOGW(TAG, "No ModbusController configured, cannot write power limit");
+  if (this->controller_ != nullptr) {
+    // Direct Modbus register write; 100 restores full power
+    uint16_t write_val = enabled ? (uint16_t)(pct + 0.5f) : 100;
+    auto cmd = modbus_controller::ModbusCommandItem::create_write_single_command(
+        this->controller_, this->power_limit_register_, write_val);
+    this->controller_->queue_command(cmd);
     return;
   }
-  auto cmd = modbus_controller::ModbusCommandItem::create_write_single_command(
-      this->controller_, this->power_limit_register_, write_val);
-  this->controller_->queue_command(cmd);
-  if (ena == 1) {
-    ESP_LOGI(TAG, "Power limit set to %u%%", pct);
-  } else {
-    ESP_LOGI(TAG, "Power limit disabled, restoring 100%%");
-  }
+
+  // Trigger-only setups are valid; on_power_limit automations were already fired above
+  ESP_LOGD(TAG, "No number entity or ModbusController configured for power limit write-back");
 }
 
 }  // namespace esphome::sunspec
