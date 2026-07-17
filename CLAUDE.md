@@ -50,12 +50,14 @@ This project follows the official ESPHome coding conventions. Key rules:
 | Range      | Model | Content                                               |
 |------------|-------|-------------------------------------------------------|
 | 40000–40069 | 1    | Common block (manufacturer, model, serial, version)   |
-| 40070–40121 | 101  | Single-phase inverter (power, voltage, current, freq, temp, energy, state) |
+| 40070–40121 | 101/103 | Inverter, single or three phase per `phases` config (power, voltage, current, freq, temp, energy, DC values, state) |
 | 40122–40149 | 120  | Nameplate (DER type, rated power)                     |
 | 40150–40175 | 123  | Controls (WMaxLimPct @ 40155 with SF=-2, WMaxLim_Ena @ 40159) |
 | 40176–40177 | —    | End model (ID 0xFFFF, length 0)                       |
 
 Writes (FC06/FC16) are accepted only in the Model 123 control window 40152–40172; scale factors (40173–40175) are read-only. Requests must address the configured unit (default 1) or 0xFF. Sensors that stop updating for `stale_timeout` (default 5 min) are reported as "not implemented" (0x8000 for int16, 0xFFFF for uint16) and the inverter state falls back to Off.
+
+Register updates are event-driven: `add_on_state_callback` on each sensor patches only that sensor's register slot(s) via `update_slot_()`; `loop()` only handles TCP traffic and the once-per-second stale scan. The component supports `MULTI_CONF` (multiple instances, each on a unique port — enforced by `FINAL_VALIDATE_SCHEMA`).
 
 String fields use big-endian uint16 register pairs (2 chars per register):
 - Manufacturer, model, serial: 16 registers = 32 chars max

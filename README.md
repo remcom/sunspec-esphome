@@ -6,13 +6,15 @@ Built for a **Solis single-phase inverter** bridged via an ESP32 (m5stack-atom, 
 
 ## Features
 
-- SunSpec Models 1 (Common), 101 (Single-phase inverter), 120 (Nameplate), 123 (Controls)
+- SunSpec Models 1 (Common), 101/103 (Single/Three-phase inverter), 120 (Nameplate), 123 (Controls)
 - FC03/FC04 read registers, FC06/FC16 write — power limit (WMaxLimPct) and enable (WMaxLim_Ena)
 - Power limit write-back to inverter over RS485 via `modbus_controller` or a `number` entity
 - `on_power_limit` automation trigger for custom write-back logic
 - Optional DC-side sensors (power, voltage, current)
+- Event-driven register updates — registers are patched when a sensor publishes, not polled
 - Stale-data detection: sensors that stop updating are reported as "not implemented" and the inverter state falls back to *Off*
 - Configurable port, unit address, and connection limit (up to 8 simultaneous clients)
+- Multiple server instances per ESP32 (one per port)
 - ESP32 (ESP-IDF or Arduino)
 
 ## Installation
@@ -46,15 +48,23 @@ sunspec:
   rated_power: 3000            # watts, max 32767
 
   # Sensor references (ESPHome sensor IDs)
+  phases: 1                          # 1 (Model 101, default) or 3 (Model 103)
   ac_power: ac_power                 # required
-  ac_voltage: ac_voltage             # required
+  ac_voltage: ac_voltage             # required (phase A voltage for phases: 3)
   ac_frequency: ac_frequency         # required
   temperature: inverter_temp         # required
-  ac_current: ac_current             # optional (derived from power/voltage if omitted)
+  ac_current: ac_current             # optional total current (derived from power/voltage for phases: 1 if omitted)
   energy_total: energy_total         # optional (kWh)
   dc_power: dc_power                 # optional
   dc_voltage: dc_voltage             # optional
   dc_current: dc_current             # optional
+
+  # Three-phase only (phases: 3)
+  # ac_current_phase_a: current_l1
+  # ac_current_phase_b: current_l2
+  # ac_current_phase_c: current_l3
+  # ac_voltage_phase_b: voltage_l2
+  # ac_voltage_phase_c: voltage_l3
 
   # Power limit write-back — option A: via a number entity (recommended)
   power_limit_number_id: power_limit # ESPHome number entity ID (0–100 = limit %, 110 = unlimited)
@@ -104,11 +114,14 @@ number:
 | `serial_number` | no | Serial number string (max 32 chars) |
 | `version` | no | Firmware version string (max 16 chars, default `1.0`) |
 | `rated_power` | yes | Inverter rated power in watts (int, max 32767) |
+| `phases` | no | `1` (Model 101, default) or `3` (Model 103) |
 | `ac_power` | yes | ESPHome sensor ID for AC power (W) |
-| `ac_voltage` | yes | ESPHome sensor ID for AC voltage (V) |
+| `ac_voltage` | yes | ESPHome sensor ID for AC voltage (V); phase A voltage when `phases: 3` |
 | `ac_frequency` | yes | ESPHome sensor ID for AC frequency (Hz) |
 | `temperature` | yes | ESPHome sensor ID for inverter temperature (°C) |
-| `ac_current` | no | ESPHome sensor ID for AC current (A); derived from power/voltage if omitted |
+| `ac_current` | no | ESPHome sensor ID for total AC current (A); derived from power/voltage for single-phase if omitted |
+| `ac_current_phase_a/b/c` | no | Per-phase current sensors (`phases: 3` only) |
+| `ac_voltage_phase_b/c` | no | Phase B/C voltage sensors (`phases: 3` only) |
 | `energy_total` | no | ESPHome sensor ID for lifetime energy (kWh) |
 | `dc_power` | no | ESPHome sensor ID for DC power (W) |
 | `dc_voltage` | no | ESPHome sensor ID for DC voltage (V) |
@@ -123,7 +136,7 @@ number:
 | Range | Model | Content |
 |-------|-------|---------|
 | 40000–40069 | 1 | Common block (manufacturer, model, serial, version, unit address) |
-| 40070–40121 | 101 | Single-phase inverter (power, voltage, current, frequency, temperature, energy, DC values, state) |
+| 40070–40121 | 101/103 | Inverter (power, voltage, current, frequency, temperature, energy, DC values, state) |
 | 40122–40149 | 120 | Nameplate (DER type, rated power) |
 | 40150–40175 | 123 | Controls (WMaxLimPct @ 40155, WMaxLim_Ena @ 40159) |
 | 40176–40177 | — | End model (ID 0xFFFF, length 0) |
@@ -148,9 +161,8 @@ On ESP32 reboot, `WMaxLim_Ena` defaults to `0` and `WMaxLimPct` defaults to `100
 
 ## Scope / Limitations
 
-- Single-phase only (Model 101)
-- One inverter instance per ESP32
 - No persistent energy counter across reboots
 - No WMaxLimPct auto-revert timer (accepted on write but not acted upon)
-- No three-phase support (Model 103)
+- No phase-to-phase voltages (PPVphAB/BC/CA report "not implemented")
 - No authentication — Modbus TCP is unauthenticated by design; run it on a trusted network segment
+- Multiple `sunspec:` instances are supported, but each needs a unique `port`

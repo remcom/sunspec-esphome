@@ -1,10 +1,12 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
+import esphome.final_validate as fv
 from esphome import automation
 from esphome.components import sensor, modbus_controller, number
 from esphome.const import CONF_ADDRESS, CONF_ID, CONF_PORT, CONF_TRIGGER_ID, CONF_VERSION
 
 DEPENDENCIES = ["network", "sensor"]
+MULTI_CONF = True
 
 sunspec_ns = cg.esphome_ns.namespace("sunspec")
 SunspecComponent = sunspec_ns.class_("SunspecComponent", cg.Component)
@@ -18,9 +20,15 @@ CONF_SERIAL_NUMBER = "serial_number"
 CONF_RATED_POWER = "rated_power"
 CONF_MAX_CONNECTIONS = "max_connections"
 CONF_STALE_TIMEOUT = "stale_timeout"
+CONF_PHASES = "phases"
 CONF_AC_POWER = "ac_power"
 CONF_AC_VOLTAGE = "ac_voltage"
 CONF_AC_CURRENT = "ac_current"
+CONF_AC_CURRENT_PHASE_A = "ac_current_phase_a"
+CONF_AC_CURRENT_PHASE_B = "ac_current_phase_b"
+CONF_AC_CURRENT_PHASE_C = "ac_current_phase_c"
+CONF_AC_VOLTAGE_PHASE_B = "ac_voltage_phase_b"
+CONF_AC_VOLTAGE_PHASE_C = "ac_voltage_phase_c"
 CONF_AC_FREQUENCY = "ac_frequency"
 CONF_TEMPERATURE = "temperature"
 CONF_ENERGY_TOTAL = "energy_total"
@@ -31,6 +39,23 @@ CONF_MODBUS_CONTROLLER_ID = "modbus_controller_id"
 CONF_POWER_LIMIT_REGISTER = "power_limit_register"
 CONF_POWER_LIMIT_NUMBER_ID = "power_limit_number_id"
 CONF_ON_POWER_LIMIT = "on_power_limit"
+
+
+PHASE_SENSOR_KEYS = [
+    CONF_AC_CURRENT_PHASE_A,
+    CONF_AC_CURRENT_PHASE_B,
+    CONF_AC_CURRENT_PHASE_C,
+    CONF_AC_VOLTAGE_PHASE_B,
+    CONF_AC_VOLTAGE_PHASE_C,
+]
+
+
+def _validate_phases(config):
+    if config[CONF_PHASES] == 1:
+        for key in PHASE_SENSOR_KEYS:
+            if key in config:
+                raise cv.Invalid(f"'{key}' requires 'phases: 3'")
+    return config
 
 
 def _validate_power_limit(config):
@@ -70,9 +95,16 @@ CONFIG_SCHEMA = cv.All(
                 cv.string, cv.Length(max=16)
             ),
             cv.Required(CONF_RATED_POWER): cv.All(cv.positive_int, cv.Range(max=32767)),
+            cv.Optional(CONF_PHASES, default=1): cv.one_of(1, 3, int=True),
             cv.Required(CONF_AC_POWER): cv.use_id(sensor.Sensor),
+            # For phases: 3, ac_voltage is the phase A voltage
             cv.Required(CONF_AC_VOLTAGE): cv.use_id(sensor.Sensor),
             cv.Optional(CONF_AC_CURRENT): cv.use_id(sensor.Sensor),
+            cv.Optional(CONF_AC_CURRENT_PHASE_A): cv.use_id(sensor.Sensor),
+            cv.Optional(CONF_AC_CURRENT_PHASE_B): cv.use_id(sensor.Sensor),
+            cv.Optional(CONF_AC_CURRENT_PHASE_C): cv.use_id(sensor.Sensor),
+            cv.Optional(CONF_AC_VOLTAGE_PHASE_B): cv.use_id(sensor.Sensor),
+            cv.Optional(CONF_AC_VOLTAGE_PHASE_C): cv.use_id(sensor.Sensor),
             cv.Required(CONF_AC_FREQUENCY): cv.use_id(sensor.Sensor),
             cv.Required(CONF_TEMPERATURE): cv.use_id(sensor.Sensor),
             cv.Optional(CONF_ENERGY_TOTAL): cv.use_id(sensor.Sensor),
@@ -91,8 +123,23 @@ CONFIG_SCHEMA = cv.All(
             ),
         }
     ).extend(cv.COMPONENT_SCHEMA),
+    _validate_phases,
     _validate_power_limit,
 )
+
+
+def _final_validate(config):
+    full = fv.full_config.get()
+    ports = [conf[CONF_PORT] for conf in full.get("sunspec", [])]
+    if ports.count(config[CONF_PORT]) > 1:
+        raise cv.Invalid(
+            f"Multiple sunspec servers are configured on port {config[CONF_PORT]}; "
+            "each server needs a unique port"
+        )
+    return config
+
+
+FINAL_VALIDATE_SCHEMA = _final_validate
 
 
 async def to_code(config):
@@ -103,6 +150,8 @@ async def to_code(config):
     cg.add(var.set_max_connections(config[CONF_MAX_CONNECTIONS]))
     cg.add(var.set_unit_address(config[CONF_ADDRESS]))
     cg.add(var.set_stale_timeout(config[CONF_STALE_TIMEOUT].total_milliseconds))
+    if config[CONF_PHASES] == 3:
+        cg.add(var.set_model_id(103))
 
     cg.add(var.set_manufacturer(config[CONF_MANUFACTURER]))
     cg.add(var.set_model(config[CONF_MODEL_NAME]))
@@ -121,6 +170,11 @@ async def to_code(config):
 
     for conf_key, setter in [
         (CONF_AC_CURRENT, "set_ac_current"),
+        (CONF_AC_CURRENT_PHASE_A, "set_ac_current_phase_a"),
+        (CONF_AC_CURRENT_PHASE_B, "set_ac_current_phase_b"),
+        (CONF_AC_CURRENT_PHASE_C, "set_ac_current_phase_c"),
+        (CONF_AC_VOLTAGE_PHASE_B, "set_ac_voltage_phase_b"),
+        (CONF_AC_VOLTAGE_PHASE_C, "set_ac_voltage_phase_c"),
         (CONF_ENERGY_TOTAL, "set_energy_total"),
         (CONF_DC_POWER, "set_dc_power"),
         (CONF_DC_VOLTAGE, "set_dc_voltage"),

@@ -80,36 +80,37 @@ void SunspecComponent::init_static_registers_() {
   this->set_reg(40068, this->unit_address_);  // DA (Modbus device address)
   this->set_reg(40069, 0);                    // Padding
 
-  // --- Inverter Block (Model 101) ---
-  this->set_reg(40070, 101);  // Model ID
-  this->set_reg(40071, 50);   // Length
-  // 40072-40075: A/AphA/AphB/AphC -- 40072/40073 updated in refresh_sensors_()
-  this->set_reg(40076, (uint16_t)(int16_t)(-2));  // A_SF = -2 (current may be derived from P/V)
-  // 40077-40079: phase voltage AB/BC/CA -- stay NI
-  // 40080: PhVphA -- updated in refresh_sensors_()
-  // 40081-40082: BN/CN -- stay NI
+  // --- Inverter Block (Model 101 single phase / 103 three phase) ---
+  this->set_reg(40070, this->model_id_);  // Model ID
+  this->set_reg(40071, 50);               // Length
+  // 40072-40075: A/AphA/AphB/AphC -- updated in update_slot_()
+  bool has_current = this->has_current_source_() || this->sensors_[SLOT_AC_CURRENT_PHA] ||
+                     this->sensors_[SLOT_AC_CURRENT_PHB] || this->sensors_[SLOT_AC_CURRENT_PHC];
+  this->set_reg(40076, has_current ? (uint16_t)(int16_t)(-2) : NI_INT16);  // A_SF
+  // 40077-40079: phase-to-phase voltage AB/BC/CA -- stay NI
+  // 40080-40082: PhVphA/BN/CN -- updated in update_slot_() where configured
   this->set_reg(40083, (uint16_t)(int16_t)(-1));  // V_SF = -1
-  this->set_reg(40084, NI_INT16);                 // W -- updated in refresh_sensors_()
+  this->set_reg(40084, NI_INT16);                 // W -- updated in update_slot_()
   this->set_reg(40085, 0);                        // W_SF = 0
-  // 40086: Hz -- updated in refresh_sensors_()
+  // 40086: Hz -- updated in update_slot_()
   this->set_reg(40087, (uint16_t)(int16_t)(-2));  // Hz_SF = -2
   // 40088-40093: VA/VAr/PF and their SFs -- int16 "not implemented"
   for (uint16_t addr = 40088; addr <= 40093; addr++) this->set_reg(addr, NI_INT16);
-  this->set_reg(40094, 0);  // WH high -- updated in refresh_sensors_()
+  this->set_reg(40094, 0);  // WH high -- updated in update_slot_()
   this->set_reg(40095, 0);  // WH low
   this->set_reg(40096, 0);  // WH_SF = 0
-  this->set_reg(40097, NI_UINT16);  // DCA -- updated in refresh_sensors_() if configured
+  this->set_reg(40097, NI_UINT16);  // DCA -- updated in update_slot_() if configured
   this->set_reg(40098, this->sensors_[SLOT_DC_CURRENT] ? (uint16_t)(int16_t)(-2) : NI_INT16);  // DCA_SF
   this->set_reg(40099, NI_UINT16);  // DCV
   this->set_reg(40100, this->sensors_[SLOT_DC_VOLTAGE] ? (uint16_t)(int16_t)(-1) : NI_INT16);  // DCV_SF
   this->set_reg(40101, NI_INT16);   // DCW
   this->set_reg(40102, this->sensors_[SLOT_DC_POWER] ? (uint16_t) 0 : NI_INT16);  // DCW_SF
-  this->set_reg(40103, NI_INT16);  // TmpCab -- updated in refresh_sensors_()
+  this->set_reg(40103, NI_INT16);  // TmpCab -- updated in update_slot_()
   this->set_reg(40104, NI_INT16);  // TmpSnk
   this->set_reg(40105, NI_INT16);  // TmpTrns
   this->set_reg(40106, NI_INT16);  // TmpOt
   this->set_reg(40107, (uint16_t)(int16_t)(-1));  // Tmp_SF = -1
-  this->set_reg(40108, ST_OFF);    // St (updated in refresh_sensors_())
+  this->set_reg(40108, ST_OFF);    // St (updated in update_slot_())
   // 40109: StVnd -- stays NI
   // 40110-40121: Evt1/Evt2/EvtVnd1-4 = 0 (no events)
   for (uint16_t addr = 40110; addr <= 40121; addr++) this->set_reg(addr, 0);
@@ -159,17 +160,28 @@ void SunspecComponent::setup() {
     return;
   }
 
-  // 2. Track per-sensor update times so stale values can be reported as
-  //    "not implemented" instead of serving frozen data forever
+  // 2. Event-driven register updates: each sensor publish patches only its own
+  //    register slot(s). The timestamps let check_stale_slots_() report sensors
+  //    that stop updating as "not implemented" instead of serving frozen data.
   for (uint8_t slot = 0; slot < SLOT_COUNT; slot++) {
     sensor::Sensor *s = this->sensors_[slot];
     if (s == nullptr) continue;
     this->sensor_last_update_[slot] = millis();
-    s->add_on_state_callback([this, slot](float) { this->sensor_last_update_[slot] = millis(); });
+    s->add_on_state_callback([this, slot](float) {
+      this->sensor_last_update_[slot] = millis();
+      this->slot_fresh_[slot] = true;
+      this->update_slot_(slot);
+    });
   }
 
-  // 3. Initialise register bank
+  // 3. Initialise register bank, then seed live slots from sensors that
+  //    already have a state (e.g. restored values)
   this->init_static_registers_();
+  for (uint8_t slot = 0; slot < SLOT_COUNT; slot++) {
+    if (this->sensors_[slot] == nullptr) continue;
+    if (this->sensors_[slot]->has_state()) this->slot_fresh_[slot] = true;
+    this->update_slot_(slot);
+  }
 
   // 4. Open non-blocking TCP socket
   this->server_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -223,6 +235,7 @@ void SunspecComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "  Serial:          %s", this->serial_number_.c_str());
   ESP_LOGCONFIG(TAG, "  Version:         %s", this->version_.c_str());
   ESP_LOGCONFIG(TAG, "  Rated Power:     %u W", this->rated_power_);
+  ESP_LOGCONFIG(TAG, "  Inverter Model:  %u", this->model_id_);
   ESP_LOGCONFIG(TAG, "  Port:            %u", this->port_);
   ESP_LOGCONFIG(TAG, "  Max Connections: %u", this->max_connections_);
   ESP_LOGCONFIG(TAG, "  Unit Address:    %u", this->unit_address_);
@@ -236,7 +249,7 @@ void SunspecComponent::loop() {
   if (this->server_fd_ < 0) return;
 
   this->accept_clients_();
-  this->refresh_sensors_();
+  this->check_stale_slots_();
 
   for (auto &c : this->clients_) {
     if (c.fd >= 0) this->process_client_(c);
@@ -285,59 +298,113 @@ void SunspecComponent::close_client_(Client &c) {
   }
 }
 
-// ---------- sensor refresh ----------
+// ---------- sensor updates (event-driven) ----------
 
-void SunspecComponent::refresh_sensors_() {
-  float pwr  = this->fresh_state_(SLOT_AC_POWER);
-  float volt = this->fresh_state_(SLOT_AC_VOLTAGE);
-
-  // AC current (SF=-2): same on total and phase A.
-  // If no current sensor, derive from power / voltage (assuming unity power factor).
-  float curr = this->fresh_state_(SLOT_AC_CURRENT);
-  if (this->sensors_[SLOT_AC_CURRENT] == nullptr &&
-      !std::isnan(pwr) && !std::isnan(volt) && volt > 1.0f) {
-    curr = pwr / volt;
-  }
-  uint16_t curr_raw = to_u16_sf(curr, -2);
-  this->set_reg(40072, curr_raw);  // A  (total)
-  this->set_reg(40073, curr_raw);  // AphA
-
-  // AC voltage (SF=-1): value x 10
-  this->set_reg(40080, to_u16_sf(volt, -1));
-
-  // AC power (SF=0): direct watts
-  this->set_reg(40084, to_sf(pwr, 0));
-
-  // AC frequency (SF=-2): value x 100
-  this->set_reg(40086, to_u16_sf(this->fresh_state_(SLOT_AC_FREQUENCY), -2));
-
-  // Energy (acc32, SF=0, sensor reports kWh). Accumulators keep their last
-  // known total when the sensor goes stale, so bypass the staleness check.
-  sensor::Sensor *energy = this->sensors_[SLOT_ENERGY];
-  if (energy != nullptr && energy->has_state()) {
-    float e = energy->get_state();
-    if (!std::isnan(e) && e >= 0) {
-      uint32_t wh = (uint32_t)(e * 1000.0f);
-      this->set_reg(40094, (uint16_t)(wh >> 16));
-      this->set_reg(40095, (uint16_t)(wh & 0xFFFF));
+void SunspecComponent::update_slot_(uint8_t slot) {
+  switch (slot) {
+    case SLOT_AC_POWER: {
+      // AC power (SF=0): direct watts
+      float pwr = this->fresh_state_(SLOT_AC_POWER);
+      this->set_reg(40084, to_sf(pwr, 0));
+      // Inverter state: no fresh power data -> Off; producing -> MPPT; else Sleeping
+      uint16_t st = ST_OFF;
+      if (!std::isnan(pwr)) st = (pwr > 5.0f) ? ST_MPPT : ST_SLEEPING;
+      this->set_reg(40108, st);
+      // Derived current depends on power
+      if (this->sensors_[SLOT_AC_CURRENT] == nullptr && this->model_id_ == 101)
+        this->update_slot_(SLOT_AC_CURRENT);
+      break;
     }
+    case SLOT_AC_VOLTAGE: {
+      // AC voltage phase A (SF=-1): value x 10
+      this->set_reg(40080, to_u16_sf(this->fresh_state_(SLOT_AC_VOLTAGE), -1));
+      // Derived current depends on voltage
+      if (this->sensors_[SLOT_AC_CURRENT] == nullptr && this->model_id_ == 101)
+        this->update_slot_(SLOT_AC_CURRENT);
+      break;
+    }
+    case SLOT_AC_CURRENT: {
+      // Total AC current (SF=-2). Single phase without a current sensor derives
+      // it from power / voltage (assuming unity power factor).
+      float curr = this->fresh_state_(SLOT_AC_CURRENT);
+      if (this->sensors_[SLOT_AC_CURRENT] == nullptr && this->model_id_ == 101) {
+        float pwr  = this->fresh_state_(SLOT_AC_POWER);
+        float volt = this->fresh_state_(SLOT_AC_VOLTAGE);
+        if (!std::isnan(pwr) && !std::isnan(volt) && volt > 1.0f) curr = pwr / volt;
+      }
+      uint16_t raw = to_u16_sf(curr, -2);
+      this->set_reg(40072, raw);                          // A (total)
+      if (this->model_id_ == 101) this->set_reg(40073, raw);  // AphA mirrors total
+      break;
+    }
+    case SLOT_AC_CURRENT_PHA:
+      this->set_reg(40073, to_u16_sf(this->fresh_state_(slot), -2));
+      break;
+    case SLOT_AC_CURRENT_PHB:
+      this->set_reg(40074, to_u16_sf(this->fresh_state_(slot), -2));
+      break;
+    case SLOT_AC_CURRENT_PHC:
+      this->set_reg(40075, to_u16_sf(this->fresh_state_(slot), -2));
+      break;
+    case SLOT_AC_VOLTAGE_PHB:
+      this->set_reg(40081, to_u16_sf(this->fresh_state_(slot), -1));
+      break;
+    case SLOT_AC_VOLTAGE_PHC:
+      this->set_reg(40082, to_u16_sf(this->fresh_state_(slot), -1));
+      break;
+    case SLOT_AC_FREQUENCY:
+      // AC frequency (SF=-2): value x 100
+      this->set_reg(40086, to_u16_sf(this->fresh_state_(slot), -2));
+      break;
+    case SLOT_TEMPERATURE:
+      // Temperature (SF=-1): value x 10
+      this->set_reg(40103, to_sf(this->fresh_state_(slot), -1));
+      break;
+    case SLOT_ENERGY: {
+      // Energy (acc32, SF=0, sensor reports kWh). Accumulators keep their last
+      // known total when the sensor goes stale, so bypass the staleness check.
+      sensor::Sensor *energy = this->sensors_[SLOT_ENERGY];
+      if (energy != nullptr && energy->has_state()) {
+        float e = energy->get_state();
+        if (!std::isnan(e) && e >= 0) {
+          uint32_t wh = (uint32_t)(e * 1000.0f);
+          this->set_reg(40094, (uint16_t)(wh >> 16));
+          this->set_reg(40095, (uint16_t)(wh & 0xFFFF));
+        }
+      }
+      break;
+    }
+    case SLOT_DC_POWER:
+      if (this->sensors_[slot]) this->set_reg(40101, to_sf(this->fresh_state_(slot), 0));
+      break;
+    case SLOT_DC_VOLTAGE:
+      if (this->sensors_[slot]) this->set_reg(40099, to_u16_sf(this->fresh_state_(slot), -1));
+      break;
+    case SLOT_DC_CURRENT:
+      if (this->sensors_[slot]) this->set_reg(40097, to_u16_sf(this->fresh_state_(slot), -2));
+      break;
+    default:
+      break;
   }
+}
 
-  // DC measurements (only touched when configured; SFs are NI otherwise)
-  if (this->sensors_[SLOT_DC_CURRENT])
-    this->set_reg(40097, to_u16_sf(this->fresh_state_(SLOT_DC_CURRENT), -2));
-  if (this->sensors_[SLOT_DC_VOLTAGE])
-    this->set_reg(40099, to_u16_sf(this->fresh_state_(SLOT_DC_VOLTAGE), -1));
-  if (this->sensors_[SLOT_DC_POWER])
-    this->set_reg(40101, to_sf(this->fresh_state_(SLOT_DC_POWER), 0));
+void SunspecComponent::check_stale_slots_() {
+  if (this->stale_timeout_ms_ == 0) return;
+  uint32_t now = millis();
+  if (now - this->last_stale_check_ < 1000) return;
+  this->last_stale_check_ = now;
 
-  // Temperature (SF=-1): value x 10
-  this->set_reg(40103, to_sf(this->fresh_state_(SLOT_TEMPERATURE), -1));
+  for (uint8_t slot = 0; slot < SLOT_COUNT; slot++) {
+    // Energy is an accumulator; the last known total stays valid
+    if (this->sensors_[slot] == nullptr || slot == SLOT_ENERGY) continue;
+    if (!this->slot_fresh_[slot]) continue;
+    if (now - this->sensor_last_update_[slot] < this->stale_timeout_ms_) continue;
 
-  // Inverter state: no fresh power data -> Off; producing -> MPPT; else Sleeping
-  uint16_t st = ST_OFF;
-  if (!std::isnan(pwr)) st = (pwr > 5.0f) ? ST_MPPT : ST_SLEEPING;
-  this->set_reg(40108, st);
+    this->slot_fresh_[slot] = false;
+    this->update_slot_(slot);  // fresh_state_() now returns NaN -> "not implemented"
+    ESP_LOGW(TAG, "Sensor '%s' has not updated for %u ms; reporting as not implemented",
+             this->sensors_[slot]->get_name().c_str(), this->stale_timeout_ms_);
+  }
 }
 
 // ---------- TCP framing ----------

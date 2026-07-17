@@ -38,8 +38,13 @@ static constexpr uint16_t WRITABLE_LAST  = 40172;
 // Slots for tracking per-sensor freshness (see sensor_last_update_)
 enum SensorSlot : uint8_t {
   SLOT_AC_POWER = 0,
-  SLOT_AC_VOLTAGE,
-  SLOT_AC_CURRENT,
+  SLOT_AC_VOLTAGE,       // single phase: PhVphA; three phase: phase A voltage
+  SLOT_AC_CURRENT,       // total current
+  SLOT_AC_CURRENT_PHA,   // three phase only
+  SLOT_AC_CURRENT_PHB,
+  SLOT_AC_CURRENT_PHC,
+  SLOT_AC_VOLTAGE_PHB,
+  SLOT_AC_VOLTAGE_PHC,
   SLOT_AC_FREQUENCY,
   SLOT_TEMPERATURE,
   SLOT_ENERGY,
@@ -68,6 +73,7 @@ class SunspecComponent : public Component {
   void set_max_connections(uint8_t n)         { this->max_connections_ = n; }
   void set_unit_address(uint8_t addr)         { this->unit_address_ = addr; }
   void set_stale_timeout(uint32_t timeout_ms) { this->stale_timeout_ms_ = timeout_ms; }
+  void set_model_id(uint16_t model_id)        { this->model_id_ = model_id; }
   void set_manufacturer(const std::string &s) { this->manufacturer_ = s; }
   void set_model(const std::string &s)        { this->model_ = s; }
   void set_serial_number(const std::string &s){ this->serial_number_ = s; }
@@ -77,6 +83,11 @@ class SunspecComponent : public Component {
   void set_ac_power(sensor::Sensor *s)     { this->sensors_[SLOT_AC_POWER] = s; }
   void set_ac_voltage(sensor::Sensor *s)   { this->sensors_[SLOT_AC_VOLTAGE] = s; }
   void set_ac_current(sensor::Sensor *s)   { this->sensors_[SLOT_AC_CURRENT] = s; }
+  void set_ac_current_phase_a(sensor::Sensor *s) { this->sensors_[SLOT_AC_CURRENT_PHA] = s; }
+  void set_ac_current_phase_b(sensor::Sensor *s) { this->sensors_[SLOT_AC_CURRENT_PHB] = s; }
+  void set_ac_current_phase_c(sensor::Sensor *s) { this->sensors_[SLOT_AC_CURRENT_PHC] = s; }
+  void set_ac_voltage_phase_b(sensor::Sensor *s) { this->sensors_[SLOT_AC_VOLTAGE_PHB] = s; }
+  void set_ac_voltage_phase_c(sensor::Sensor *s) { this->sensors_[SLOT_AC_VOLTAGE_PHC] = s; }
   void set_ac_frequency(sensor::Sensor *s) { this->sensors_[SLOT_AC_FREQUENCY] = s; }
   void set_temperature(sensor::Sensor *s)  { this->sensors_[SLOT_TEMPERATURE] = s; }
   void set_energy_total(sensor::Sensor *s) { this->sensors_[SLOT_ENERGY] = s; }
@@ -102,6 +113,7 @@ class SunspecComponent : public Component {
   uint8_t     max_connections_{4};
   uint8_t     unit_address_{1};
   uint32_t    stale_timeout_ms_{300000};
+  uint16_t    model_id_{101};  // 101 = single phase, 103 = three phase
   std::string manufacturer_;
   std::string model_;
   std::string serial_number_;
@@ -112,6 +124,8 @@ class SunspecComponent : public Component {
   // temperature required; the rest optional)
   sensor::Sensor *sensors_[SLOT_COUNT]{};
   uint32_t        sensor_last_update_[SLOT_COUNT]{};
+  bool            slot_fresh_[SLOT_COUNT]{};
+  uint32_t        last_stale_check_{0};
 
   // Modbus write-back
   modbus_controller::ModbusController *controller_{nullptr};
@@ -129,7 +143,8 @@ class SunspecComponent : public Component {
   // Internal helpers
   void     init_static_registers_();
   void     encode_string_(uint16_t *dest, const std::string &s, uint8_t reg_count);
-  void     refresh_sensors_();
+  void     update_slot_(uint8_t slot);
+  void     check_stale_slots_();
   void     accept_clients_();
   void     process_client_(Client &c);
   void     handle_frame_(Client &c, uint16_t frame_len);
@@ -139,6 +154,10 @@ class SunspecComponent : public Component {
   void     close_client_(Client &c);
   // Sensor state, or NaN when unset / never updated / stale
   float    fresh_state_(uint8_t slot);
+  // Whether the total current point has any source (sensor or P/V derivation)
+  bool     has_current_source_() {
+    return this->sensors_[SLOT_AC_CURRENT] != nullptr || this->model_id_ == 101;
+  }
 
   // Register helpers
   inline uint16_t get_reg(uint16_t addr)             { return this->registers_[addr - BASE_ADDR]; }
