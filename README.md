@@ -17,6 +17,10 @@ Built for a **Solis single-phase inverter** bridged via an ESP32 (m5stack-atom, 
 - Multiple server instances per ESP32 (one per port)
 - ESP32 (ESP-IDF or Arduino)
 
+## Requirements
+
+ESPHome **2026.9.0 or newer** — the Modbus write-back path uses the `WriterDevice` write helpers that replaced the `ModbusCommandItem` API deprecated in 2026.9. On older ESPHome releases, pin the previous tag of this component.
+
 ## Installation
 
 ```yaml

@@ -612,10 +612,11 @@ void SunspecComponent::apply_power_limit_() {
 
   if (this->controller_ != nullptr) {
     // Direct Modbus register write; 100 restores full power
-    uint16_t write_val = enabled ? (uint16_t)(pct + 0.5f) : 100;
-    auto cmd = modbus_controller::ModbusCommandItem::create_write_single_command(
-        this->controller_, this->power_limit_register_, write_val);
-    this->controller_->queue_command(cmd);
+    uint16_t write_val = enabled ? (uint16_t) (pct + 0.5f) : 100;
+    if (!this->writer_.write_single_register(this->power_limit_register_, write_val)) {
+      ESP_LOGW(TAG, "Failed to queue power limit write of %u to register %u", write_val,
+               this->power_limit_register_);
+    }
     return;
   }
 

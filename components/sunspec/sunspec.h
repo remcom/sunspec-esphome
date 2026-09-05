@@ -95,7 +95,11 @@ class SunspecComponent : public Component {
   void set_dc_voltage(sensor::Sensor *s)   { this->sensors_[SLOT_DC_VOLTAGE] = s; }
   void set_dc_current(sensor::Sensor *s)   { this->sensors_[SLOT_DC_CURRENT] = s; }
 
-  void set_modbus_controller(modbus_controller::ModbusController *ctrl) { this->controller_ = ctrl; }
+  void set_modbus_controller(modbus_controller::ModbusController *ctrl) {
+    this->controller_ = ctrl;
+    // Binds the writer to the controller's hub and device address (ESPHome 2026.9 write API)
+    this->writer_.set_controller(ctrl);
+  }
   void set_power_limit_register(uint16_t reg) { this->power_limit_register_ = reg; }
   void set_power_limit_number(number::Number *n) { this->power_limit_number_ = n; }
 
@@ -129,6 +133,7 @@ class SunspecComponent : public Component {
 
   // Modbus write-back
   modbus_controller::ModbusController *controller_{nullptr};
+  modbus_controller::WriterDevice writer_;
   uint16_t power_limit_register_{0};
   number::Number *power_limit_number_{nullptr};
   CallbackManager<void(float, bool)> power_limit_callback_;

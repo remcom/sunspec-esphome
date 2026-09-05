@@ -77,7 +77,7 @@ python -m pytest tests/
 - `WMaxLim_Ena = 1`: sets number entity to the limit percentage (0–100)
 - `WMaxLim_Ena = 0`: sets number entity to `110` (maps to unlimited)
 
-**Via direct Modbus register write (legacy; `modbus_controller_id` and `power_limit_register` must appear together):**
+**Via direct Modbus register write (legacy; `modbus_controller_id` and `power_limit_register` must appear together):** sent through a `modbus_controller::WriterDevice` member (`writer_.write_single_register()`), bound to the controller in `set_modbus_controller()`. The old `ModbusCommandItem::create_write_single_command()` / `queue_command()` path was deprecated in ESPHome 2026.9 (removed 2027.3), so this component requires ESPHome 2026.9+.
 - `WMaxLim_Ena = 1`: writes the limit percentage (rounded to whole %) to `power_limit_register`
 - `WMaxLim_Ena = 0`: writes `100` to restore full power
 
