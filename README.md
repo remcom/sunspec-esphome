@@ -1,5 +1,8 @@
 # sunspec-esphome
 
+> [!IMPORTANT]
+> **This component has moved to [remcom/esphome-component](https://github.com/remcom/esphome-component).** This repository is no longer maintained — please use the new location for updates, issues and pull requests.
+
 Custom ESPHome external component that runs a **SunSpec Modbus TCP server** (default port 502) directly on an ESP32. It reads live inverter data from existing ESPHome sensors and serves it to any SunSpec-compatible energy manager (Victron, SolarEdge, Fronius, etc.). It also accepts power limit commands from SunSpec clients and relays them back to the inverter over RS485 Modbus.
 
 Built for a **Solis single-phase inverter** bridged via an ESP32 (m5stack-atom, ESP-IDF), but the sensor IDs and power limit register are configurable via YAML.
@@ -23,8 +26,8 @@ Built for a **Solis single-phase inverter** bridged via an ESP32 (m5stack-atom, 
 external_components:
   - source:
       type: git
-      url: https://github.com/remcom/sunspec-esphome
-      ref: master
+      url: https://github.com/remcom/esphome-component
+      ref: main
     refresh: 0d
     components:
       - sunspec
